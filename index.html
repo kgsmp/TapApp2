@@ -4,16 +4,15 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Audio Sampler</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body>
   <div id="root"></div>
 
-  <script type="text/babel">
-    const { useState, useRef, useEffect } = React;
+  <script>
+    const { createElement: e, useState, useRef, useEffect } = React;
 
     function MobileSampler() {
       const [pads, setPads] = useState(Array(16).fill(null));
@@ -56,8 +55,8 @@
           mediaRecorder.current = new MediaRecorder(stream);
           audioChunks.current = [];
 
-          mediaRecorder.current.ondataavailable = (e) => {
-            audioChunks.current.push(e.data);
+          mediaRecorder.current.ondataavailable = (ev) => {
+            audioChunks.current.push(ev.data);
           };
 
           mediaRecorder.current.onstop = async () => {
@@ -92,13 +91,13 @@
         }
       };
 
-      const handleFileUpload = async (e) => {
+      const handleFileUpload = async (ev) => {
         if (selectedPad === null) {
           alert('Please select a pad first');
           return;
         }
 
-        const file = e.target.files[0];
+        const file = ev.target.files[0];
         if (!file) return;
 
         const arrayBuffer = await file.arrayBuffer();
@@ -114,7 +113,7 @@
         };
         setPads(newPads);
         
-        e.target.value = '';
+        ev.target.value = '';
       };
 
       const processAudio = async (padData, params) => {
@@ -394,8 +393,8 @@
           trackRecorder.current = new MediaRecorder(trackStream.current);
           audioChunks.current = [];
 
-          trackRecorder.current.ondataavailable = (e) => {
-            audioChunks.current.push(e.data);
+          trackRecorder.current.ondataavailable = (ev) => {
+            audioChunks.current.push(ev.data);
           };
 
           trackRecorder.current.onstop = () => {
@@ -447,255 +446,184 @@
         audioChunks.current = [];
       };
 
-      // SVG Icons as components
-      const Mic = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>;
-      const Upload = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>;
-      const Circle = () => <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/></svg>;
-      const Trash2 = () => <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>;
-      const Edit2 = () => <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>;
-      const Volume2 = () => <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /></svg>;
-      const VolumeX = () => <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" /></svg>;
-      const Scissors = () => <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243 4.243 3 3 0 004.243-4.243zm0-5.758a3 3 0 10-4.243-4.243 3 3 0 004.243 4.243z" /></svg>;
-      const X = () => <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>;
-      const Download = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>;
-      const Volume2Large = () => <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /></svg>;
+      // Main render
+      return e('div', { className: 'min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 p-4 pb-48' },
+        e('h1', { className: 'text-3xl font-bold text-white text-center mb-6' }, 'Audio Sampler'),
+        
+        isRecordingTrack && e('div', { className: 'bg-red-600 text-white text-center py-2 rounded-lg mb-4 animate-pulse font-bold' }, '🔴 RECORDING TRACK'),
 
-      return (
-        <div className="min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 p-4 pb-48">
-          <h1 className="text-3xl font-bold text-white text-center mb-6">Audio Sampler</h1>
-          
-          {isRecordingTrack && (
-            <div className="bg-red-600 text-white text-center py-2 rounded-lg mb-4 animate-pulse font-bold">
-              🔴 RECORDING TRACK
-            </div>
-          )}
-
-          <div className="grid grid-cols-4 gap-3 max-w-md mx-auto mb-6">
-            {pads.map((pad, i) => (
-              <div key={i} className="relative">
-                <button
-                  onClick={() => pad ? playPad(i) : setSelectedPad(i)}
-                  className={`
-                    w-full aspect-square rounded-xl font-bold text-lg transition-all
-                    ${selectedPad === i ? 'ring-4 ring-blue-400' : ''}
-                    ${playingPads.has(i) ? 'bg-green-500 scale-95' : 
-                      pad ? 'bg-blue-600 hover:bg-blue-500' : 'bg-gray-700 hover:bg-gray-600'}
-                    ${mutedPads.has(i) ? 'opacity-50' : ''}
-                    text-white shadow-lg active:scale-90
-                  `}
-                >
-                  {i + 1}
-                </button>
-                
-                {pad && (
-                  <div className="absolute top-1 right-1 flex gap-1">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleMute(i);
-                      }}
-                      className="bg-gray-900 bg-opacity-80 p-1 rounded"
-                    >
-                      {mutedPads.has(i) ? <VolumeX /> : <Volume2 />}
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        openEditor(i);
-                      }}
-                      className="bg-gray-900 bg-opacity-80 p-1 rounded"
-                    >
-                      <Edit2 />
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        clearPad(i);
-                      }}
-                      className="bg-red-600 bg-opacity-80 p-1 rounded"
-                    >
-                      <Trash2 />
-                    </button>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-
-          <div className="fixed bottom-0 left-0 right-0 bg-gray-800 p-4 shadow-lg">
-            <div className="max-w-md mx-auto space-y-3">
-              <div className="text-white text-center text-sm">
-                {selectedPad !== null ? `Pad ${selectedPad + 1} selected` : 'Select a pad'}
-              </div>
+        e('div', { className: 'grid grid-cols-4 gap-3 max-w-md mx-auto mb-6' },
+          pads.map((pad, i) => 
+            e('div', { key: i, className: 'relative' },
+              e('button', {
+                onClick: () => pad ? playPad(i) : setSelectedPad(i),
+                className: `w-full aspect-square rounded-xl font-bold text-lg transition-all ${selectedPad === i ? 'ring-4 ring-blue-400' : ''} ${playingPads.has(i) ? 'bg-green-500 scale-95' : pad ? 'bg-blue-600 hover:bg-blue-500' : 'bg-gray-700 hover:bg-gray-600'} ${mutedPads.has(i) ? 'opacity-50' : ''} text-white shadow-lg active:scale-90`
+              }, i + 1),
               
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={isRecording ? stopRecording : startRecording}
-                  disabled={selectedPad === null}
-                  className={`
-                    py-3 rounded-xl font-bold text-white shadow-lg
-                    transition-all active:scale-95 flex items-center justify-center gap-2
-                    ${isRecording ? 'bg-red-600 animate-pulse' : 'bg-blue-600 hover:bg-blue-500'}
-                    disabled:bg-gray-600 disabled:cursor-not-allowed
-                  `}
-                >
-                  <Mic />
-                  {isRecording ? 'Stop' : 'Record'}
-                </button>
+              pad && e('div', { className: 'absolute top-1 right-1 flex gap-1' },
+                e('button', {
+                  onClick: (ev) => { ev.stopPropagation(); toggleMute(i); },
+                  className: 'bg-gray-900 bg-opacity-80 p-1 rounded text-white text-xs'
+                }, mutedPads.has(i) ? '🔇' : '🔊'),
+                e('button', {
+                  onClick: (ev) => { ev.stopPropagation(); openEditor(i); },
+                  className: 'bg-gray-900 bg-opacity-80 p-1 rounded text-white text-xs'
+                }, '✏️'),
+                e('button', {
+                  onClick: (ev) => { ev.stopPropagation(); clearPad(i); },
+                  className: 'bg-red-600 bg-opacity-80 p-1 rounded text-white text-xs'
+                }, '🗑️')
+              )
+            )
+          )
+        ),
 
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={selectedPad === null}
-                  className="
-                    py-3 rounded-xl font-bold text-white shadow-lg
-                    bg-purple-600 hover:bg-purple-500
-                    transition-all active:scale-95 flex items-center justify-center gap-2
-                    disabled:bg-gray-600 disabled:cursor-not-allowed
-                  "
-                >
-                  <Upload />
-                  Upload
-                </button>
-              </div>
+        e('div', { className: 'fixed bottom-0 left-0 right-0 bg-gray-800 p-4 shadow-lg' },
+          e('div', { className: 'max-w-md mx-auto space-y-3' },
+            e('div', { className: 'text-white text-center text-sm' },
+              selectedPad !== null ? `Pad ${selectedPad + 1} selected` : 'Select a pad'
+            ),
+            
+            e('div', { className: 'grid grid-cols-2 gap-2' },
+              e('button', {
+                onClick: isRecording ? stopRecording : startRecording,
+                disabled: selectedPad === null,
+                className: `py-3 rounded-xl font-bold text-white shadow-lg transition-all active:scale-95 ${isRecording ? 'bg-red-600 animate-pulse' : 'bg-blue-600 hover:bg-blue-500'} disabled:bg-gray-600 disabled:cursor-not-allowed`
+              }, isRecording ? '⏹️ Stop' : '🎤 Record'),
 
-              <button
-                onClick={isRecordingTrack ? stopTrackRecording : startTrackRecording}
-                className={`
-                  w-full py-3 rounded-xl font-bold text-white shadow-lg
-                  transition-all active:scale-95 flex items-center justify-center gap-2
-                  ${isRecordingTrack ? 'bg-red-600 animate-pulse' : 'bg-green-600 hover:bg-green-500'}
-                `}
-              >
-                <Circle />
-                {isRecordingTrack ? 'Stop Track Recording' : 'Record Track'}
-              </button>
-            </div>
-          </div>
+              e('button', {
+                onClick: () => fileInputRef.current?.click(),
+                disabled: selectedPad === null,
+                className: 'py-3 rounded-xl font-bold text-white shadow-lg bg-purple-600 hover:bg-purple-500 transition-all active:scale-95 disabled:bg-gray-600 disabled:cursor-not-allowed'
+              }, '📤 Upload')
+            ),
 
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="audio/*"
-            onChange={handleFileUpload}
-            className="hidden"
-          />
+            e('button', {
+              onClick: isRecordingTrack ? stopTrackRecording : startTrackRecording,
+              className: `w-full py-3 rounded-xl font-bold text-white shadow-lg transition-all active:scale-95 ${isRecordingTrack ? 'bg-red-600 animate-pulse' : 'bg-green-600 hover:bg-green-500'}`
+            }, isRecordingTrack ? '⏹️ Stop Track Recording' : '⏺️ Record Track')
+          )
+        ),
 
-          {editingPad !== null && (
-            <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-4 z-50">
-              <div className="bg-gray-800 rounded-xl p-6 max-w-md w-full">
-                <div className="flex justify-between items-center mb-4">
-                  <h2 className="text-xl font-bold text-white">Edit Pad {editingPad + 1}</h2>
-                  <button onClick={() => setEditingPad(null)} className="text-white">
-                    <X />
-                  </button>
-                </div>
+        e('input', {
+          ref: fileInputRef,
+          type: 'file',
+          accept: 'audio/*',
+          onChange: handleFileUpload,
+          className: 'hidden'
+        }),
 
-                <div className="space-y-4">
-                  <div>
-                    <label className="text-white text-sm block mb-2 flex items-center gap-2">
-                      <Volume2Large />
-                      Volume: {Math.round(editParams.volume * 100)}%
-                    </label>
-                    <input
-                      type="range"
-                      min="0"
-                      max="2"
-                      step="0.1"
-                      value={editParams.volume}
-                      onChange={(e) => setEditParams({...editParams, volume: parseFloat(e.target.value)})}
-                      className="w-full"
-                    />
-                  </div>
+        editingPad !== null && e('div', { className: 'fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-4 z-50' },
+          e('div', { className: 'bg-gray-800 rounded-xl p-6 max-w-md w-full' },
+            e('div', { className: 'flex justify-between items-center mb-4' },
+              e('h2', { className: 'text-xl font-bold text-white' }, `Edit Pad ${editingPad + 1}`),
+              e('button', { onClick: () => setEditingPad(null), className: 'text-white text-2xl' }, '×')
+            ),
 
-                  <div>
-                    <label className="text-white text-sm block mb-2​​​​​​​​​​​​​​​​
-              <div>
-                <label className="text-white text-sm block mb-2 flex items-center gap-2">
-                  <Scissors />
-                  Trim End: {Math.round(editParams.trimEnd * 100)}%
-                </label>
-                <input
-                  type="range"
-                  min={editParams.trimStart}
-                  max="1"
-                  step="0.01"
-                  value={editParams.trimEnd}
-                  onChange={(e) => setEditParams({...editParams, trimEnd: parseFloat(e.target.value)})}
-                  className="w-full"
-                />
-              </div>
+            e('div', { className: 'space-y-4' },
+              e('div', null,
+                e('label', { className: 'text-white text-sm block mb-2' }, `🔊 Volume: ${Math.round(editParams.volume * 100)}%`),
+                e('input', {
+                  type: 'range',
+                  min: '0',
+                  max: '2',
+                  step: '0.1',
+                  value: editParams.volume,
+                  onChange: (ev) => setEditParams({...editParams, volume: parseFloat(ev.target.value)}),
+                  className: 'w-full'
+                })
+              ),
 
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  id="normalize"
-                  checked={editParams.normalize}
-                  onChange={(e) => setEditParams({...editParams, normalize: e.target.checked})}
-                  className="w-5 h-5"
-                />
-                <label htmlFor="normalize" className="text-white">Normalize Audio</label>
-              </div>
+              e('div', null,
+                e('label', { className: 'text-white text-sm block mb-2' }, `✂️ Trim Start: ${Math.round(editParams.trimStart * 100)}%`),
+                e('input', {
+                  type: 'range',
+                  min: '0',
+                  max: editParams.trimEnd,
+                  step: '0.01',
+                  value: editParams.trimStart,
+                  onChange: (ev) => setEditParams({...editParams, trimStart: parseFloat(ev.target.value)}),
+                  className: 'w-full'
+                })
+              ),
 
-              <button
-                onClick={applyEdit}
-                className="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-xl transition-all active:scale-95"
-              >
-                Apply Changes
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+              e('div', null,
+                e('label', { className: 'text-white text-sm block mb-2' }, `✂️ Trim End: ${Math.round(editParams.trimEnd * 100)}%`),
+                e('input', {
+                  type: 'range',
+                  min: editParams.trimStart,
+                  max: '1',
+                  step: '0.01',
+                  value: editParams.trimEnd,
+                  onChange: (ev) => setEditParams({...editParams, trimEnd: parseFloat(ev.target.value)}),
+                  className: 'w-full'
+                })
+              ),
 
-      {showExportModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-4 z-50">
-          <div className="bg-gray-800 rounded-xl p-6 max-w-md w-full">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-xl font-bold text-white">Export Track</h2>
-              <button onClick={() => setShowExportModal(false)} className="text-white">
-                <X />
-              </button>
-            </div>
+              e('div', { className: 'flex items-center gap-2' },
+                e('input', {
+                  type: 'checkbox',
+                  id: 'normalize',
+                  checked: editParams.normalize,
+                  onChange: (ev) => setEditParams({...editParams, normalize: ev.target.checked}),
+                  className: 'w-5 h-5'
+                }),
+                e('label', { htmlFor: 'normalize', className: 'text-white' }, 'Normalize Audio')
+              ),
 
-            <div className="space-y-4">
-              <div>
-                <label className="text-white text-sm block mb-2">Format</label>
-                <select
-                  value={exportFormat}
-                  onChange={(e) => setExportFormat(e.target.value)}
-                  className="w-full bg-gray-700 text-white p-3 rounded-lg"
-                >
-                  <option value="wav">WAV</option>
-                  <option value="aiff">AIFF</option>
-                  <option value="mp3">MP3 (as WAV)</option>
-                </select>
-              </div>
+              e('button', {
+                onClick: applyEdit,
+                className: 'w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-xl transition-all active:scale-95'
+              }, 'Apply Changes')
+            )
+          )
+        ),
 
-              <div>
-                <label className="text-white text-sm block mb-2">Sample Rate</label>
-                <select
-                  value={exportSampleRate}
-                  onChange={(e) => setExportSampleRate(parseInt(e.target.value))}
-                  className="w-full bg-gray-700 text-white p-3 rounded-lg"
-                >
-                  <option value="44100">44.1 kHz</option>
-                  <option value="48000">48 kHz</option>
-                </select>
-              </div>
+        showExportModal && e('div', { className: 'fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-4 z-50' },
+          e('div', { className: 'bg-gray-800 rounded-xl p-6 max-w-md w-full' },
+            e('div', { className: 'flex justify-between items-center mb-4' },
+              e('h2', { className: 'text-xl font-bold text-white' }, 'Export Track'),
+              e('button', { onClick: () => setShowExportModal(false), className: 'text-white text-2xl' }, '×')
+            ),
 
-              <button
-                onClick={exportTrack}
-                className="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-xl transition-all active:scale-95 flex items-center justify-center gap-2"
-              >
-                <Download />
-                Export
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+            e('div', { className: 'space-y-4' },
+              e('div', null,
+                e('label', { className: 'text-white text-sm block mb-2' }, 'Format'),
+                e('select', {
+                  value: exportFormat,
+                  onChange: (ev) => setExportFormat(ev.target.value),
+                  className: 'w-full bg-gray-700 text-white p-3 rounded-lg'
+                },
+                  e('option', { value: 'wav' }, 'WAV'),
+                  e('option', { value: 'aiff' }, 'AIFF'),
+                  e('option', { value: 'mp3' }, 'MP3 (as WAV)')
+                )
+              ),
 
-ReactDOM.render(<MobileSampler />, document.getElementById('root'));
+              e('div', null,
+                e('label', { className: 'text-white text-sm block mb-2' }, 'Sample Rate'),
+                e('select', {
+                  value: exportSampleRate,
+                  onChange: (ev) => setExportSampleRate(parseInt(ev.target.value)),
+                  className: 'w-full bg-gray-700 text-white p-3 rounded-lg'
+                },
+                  e('option', { value: '44100' }, '44.1 kHz'),
+                  e('option', { value: '48000' }, '48 kHz')
+                )
+              ),
+
+              e('button', {
+                onClick: exportTrack,
+                className: 'w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-xl transition-all active:scale-95'
+              }, '💾 Export')
+            )
+          )
+        )
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(React.createElement(MobileSampler));
+  </script>
+</body>
+</html>
