@@ -56,11 +56,65 @@
         };
       }, []);
 
+      const drawWaveform = () => {
+        if (!canvasRef.current || !waveformData) return;
+        
+        const canvas = canvasRef.current;
+        const ctx = canvas.getContext('2d');
+        const width = canvas.width;
+        const height = canvas.height;
+        
+        ctx.fillStyle = '#1f2937';
+        ctx.fillRect(0, 0, width, height);
+        
+        ctx.strokeStyle = '#ef4444';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, height / 2);
+        ctx.lineTo(width, height / 2);
+        ctx.stroke();
+        
+        const startIdx = Math.floor((waveformData.length * editParams.trimStart) / zoomLevel);
+        const endIdx = Math.floor((waveformData.length * editParams.trimEnd) / zoomLevel);
+        const visibleData = waveformData.slice(startIdx, endIdx);
+        
+        ctx.strokeStyle = '#3b82f6';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        
+        const step = width / visibleData.length;
+        
+        for (let i = 0; i < visibleData.length; i++) {
+          const x = i * step;
+          const y = height / 2 - (visibleData[i] * height / 2);
+          
+          if (i === 0) {
+            ctx.moveTo(x, y);
+          } else {
+            ctx.lineTo(x, y);
+          }
+        }
+        
+        ctx.stroke();
+        
+        ctx.fillStyle = 'rgba(34, 197, 94, 0.3)';
+        ctx.fillRect(0, 0, width, height);
+        
+        const trimStartPercent = editParams.trimStart;
+        const trimEndPercent = editParams.trimEnd;
+        const trimStartX = trimStartPercent * width;
+        const trimEndX = trimEndPercent * width;
+        
+        ctx.fillStyle = 'rgba(239, 68, 68, 0.3)';
+        ctx.fillRect(0, 0, trimStartX, height);
+        ctx.fillRect(trimEndX, 0, width - trimEndX, height);
+      };
+
       useEffect(() => {
-        if (editingPad !== null && pads[editingPad] && canvasRef.current) {
+        if (editingPad !== null && waveformData && canvasRef.current) {
           drawWaveform();
         }
-      }, [editingPad, waveformData, zoomLevel, editParams.trimStart, editParams.trimEnd]);
+      }, [waveformData, zoomLevel, editParams.trimStart, editParams.trimEnd]);
 
       const startRecording = async () => {
         if (selectedPad === null) {
@@ -204,58 +258,6 @@
         }
         
         return filteredData;
-      };
-
-      const drawWaveform = () => {
-        if (!canvasRef.current || !waveformData) return;
-        
-        const canvas = canvasRef.current;
-        const ctx = canvas.getContext('2d');
-        const width = canvas.width;
-        const height = canvas.height;
-        
-        ctx.fillStyle = '#1f2937';
-        ctx.fillRect(0, 0, width, height);
-        
-        ctx.strokeStyle = '#ef4444';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(0, height / 2);
-        ctx.lineTo(width, height / 2);
-        ctx.stroke();
-        
-        const startIdx = Math.floor((waveformData.length * editParams.trimStart) / zoomLevel);
-        const endIdx = Math.floor((waveformData.length * editParams.trimEnd) / zoomLevel);
-        const visibleData = waveformData.slice(startIdx, endIdx);
-        
-        ctx.strokeStyle = '#3b82f6';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        
-        const step = width / visibleData.length;
-        
-        for (let i = 0; i < visibleData.length; i++) {
-          const x = i * step;
-          const y = height / 2 - (visibleData[i] * height / 2);
-          
-          if (i === 0) {
-            ctx.moveTo(x, y);
-          } else {
-            ctx.lineTo(x, y);
-          }
-        }
-        
-        ctx.stroke();
-        
-        const trimStartX = ((editParams.trimStart - (editParams.trimStart / zoomLevel)) / (editParams.trimEnd - editParams.trimStart)) * width;
-        const trimEndX = ((editParams.trimEnd - (editParams.trimStart / zoomLevel)) / (editParams.trimEnd - editParams.trimStart)) * width;
-        
-        ctx.fillStyle = 'rgba(34, 197, 94, 0.3)';
-        ctx.fillRect(0, 0, width, height);
-        
-        ctx.fillStyle = 'rgba(239, 68, 68, 0.3)';
-        ctx.fillRect(0, 0, trimStartX, height);
-        ctx.fillRect(trimEndX, 0, width - trimEndX, height);
       };
 
       const audioBufferToWav = (buffer, sampleRate = null) => {
@@ -663,7 +665,7 @@
           e('div', { className: 'bg-gray-800 rounded-xl p-6 max-w-2xl w-full my-8' },
             e('div', { className: 'flex justify-between items-center mb-4' },
               e('h2', { className: 'text-xl font-bold text-white' }, `Edit Pad ${editingPad + 1}`),
-              e('button', { onClick: () => setEditingPad(null), className: 'text-white text-2xl' }, '×')
+              e('button', { onClick: () => { setEditingPad(null); setWaveformData(null); }, className: 'text-white text-2xl' }, '×')
             ),
 
             e('div', { className: 'space-y-4' },
@@ -697,7 +699,7 @@
                   max: '2',
                   step: '0.1',
                   value: editParams.volume,
-                  onChange: (ev) => setEditParams({...editParams, volume: parseFloat(ev​​​​​​​​​​​​​​​​
+                  onChange: (ev) => setEditParams({...editParams, volume: parseFloat(​​​​​​​​​​​​​​​​
           e('div', null,
             e('label', { className: 'text-white text-sm block mb-2' }, `✂️ Trim Start: ${Math.round(editParams.trimStart * 100)}%`),
             e('input', {
@@ -824,4 +826,4 @@
 }
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(React.createElement(MobileSampler));
+root.render(e(MobileSampler));
