@@ -2,828 +2,847 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
   <title>Audio Sampler</title>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body>
-  <div id="root"></div>
+  <div id="root">Loading...</div>
 
   <script>
-    const { createElement: e, useState, useRef, useEffect } = React;
-
-    function MobileSampler() {
-      const [pads, setPads] = useState(Array(16).fill(null));
-      const [selectedPad, setSelectedPad] = useState(null);
-      const [isRecording, setIsRecording] = useState(false);
-      const [playingPads, setPlayingPads] = useState(new Set());
-      const [editingPad, setEditingPad] = useState(null);
-      const [editParams, setEditParams] = useState({ 
-        volume: 1, 
-        trimStart: 0, 
-        trimEnd: 1, 
-        normalize: false,
-        loop: false,
-        playMode: 'exclusive',
-        mutePads: []
-      });
-      const [mutedPads, setMutedPads] = useState(new Set());
-      const [isRecordingTrack, setIsRecordingTrack] = useState(false);
-      const [showExportModal, setShowExportModal] = useState(false);
-      const [exportFormat, setExportFormat] = useState('wav');
-      const [exportSampleRate, setExportSampleRate] = useState(48000);
-      const [waveformData, setWaveformData] = useState(null);
-      const [zoomLevel, setZoomLevel] = useState(1);
-      const [lastPlayedPad, setLastPlayedPad] = useState(null);
+    (function() {
+      'use strict';
       
-      const mediaRecorder = useRef(null);
-      const audioChunks = useRef([]);
-      const audioContextRef = useRef(null);
-      const audioElements = useRef({});
-      const trackRecorder = useRef(null);
-      const trackStream = useRef(null);
-      const fileInputRef = useRef(null);
-      const canvasRef = useRef(null);
+      const { createElement: e, useState, useRef, useEffect } = React;
 
-      useEffect(() => {
-        audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
-        return () => {
-          if (audioContextRef.current) {
-            audioContextRef.current.close();
-          }
-        };
-      }, []);
-
-      const drawWaveform = () => {
-        if (!canvasRef.current || !waveformData) return;
-        
-        const canvas = canvasRef.current;
-        const ctx = canvas.getContext('2d');
-        const width = canvas.width;
-        const height = canvas.height;
-        
-        ctx.fillStyle = '#1f2937';
-        ctx.fillRect(0, 0, width, height);
-        
-        ctx.strokeStyle = '#ef4444';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(0, height / 2);
-        ctx.lineTo(width, height / 2);
-        ctx.stroke();
-        
-        const startIdx = Math.floor((waveformData.length * editParams.trimStart) / zoomLevel);
-        const endIdx = Math.floor((waveformData.length * editParams.trimEnd) / zoomLevel);
-        const visibleData = waveformData.slice(startIdx, endIdx);
-        
-        ctx.strokeStyle = '#3b82f6';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        
-        const step = width / visibleData.length;
-        
-        for (let i = 0; i < visibleData.length; i++) {
-          const x = i * step;
-          const y = height / 2 - (visibleData[i] * height / 2);
-          
-          if (i === 0) {
-            ctx.moveTo(x, y);
-          } else {
-            ctx.lineTo(x, y);
-          }
-        }
-        
-        ctx.stroke();
-        
-        ctx.fillStyle = 'rgba(34, 197, 94, 0.3)';
-        ctx.fillRect(0, 0, width, height);
-        
-        const trimStartPercent = editParams.trimStart;
-        const trimEndPercent = editParams.trimEnd;
-        const trimStartX = trimStartPercent * width;
-        const trimEndX = trimEndPercent * width;
-        
-        ctx.fillStyle = 'rgba(239, 68, 68, 0.3)';
-        ctx.fillRect(0, 0, trimStartX, height);
-        ctx.fillRect(trimEndX, 0, width - trimEndX, height);
-      };
-
-      useEffect(() => {
-        if (editingPad !== null && waveformData && canvasRef.current) {
-          drawWaveform();
-        }
-      }, [waveformData, zoomLevel, editParams.trimStart, editParams.trimEnd]);
-
-      const startRecording = async () => {
-        if (selectedPad === null) {
-          alert('Please select a pad first');
-          return;
-        }
-
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          mediaRecorder.current = new MediaRecorder(stream);
-          audioChunks.current = [];
-
-          mediaRecorder.current.ondataavailable = (ev) => {
-            audioChunks.current.push(ev.data);
-          };
-
-          mediaRecorder.current.onstop = async () => {
-            const blob = new Blob(audioChunks.current, { type: 'audio/webm' });
-            const arrayBuffer = await blob.arrayBuffer();
-            
-            const newPads = [...pads];
-            newPads[selectedPad] = {
-              original: arrayBuffer,
-              processed: arrayBuffer,
-              volume: 1,
-              trimStart: 0,
-              trimEnd: 1,
-              normalize: false,
-              loop: false,
-              playMode: 'exclusive',
-              mutePads: []
-            };
-            setPads(newPads);
-            
-            stream.getTracks().forEach(track => track.stop());
-          };
-
-          mediaRecorder.current.start();
-          setIsRecording(true);
-        } catch (err) {
-          alert('Microphone access denied');
-        }
-      };
-
-      const stopRecording = () => {
-        if (mediaRecorder.current && isRecording) {
-          mediaRecorder.current.stop();
-          setIsRecording(false);
-        }
-      };
-
-      const handleFileUpload = async (ev) => {
-        if (selectedPad === null) {
-          alert('Please select a pad first');
-          return;
-        }
-
-        const file = ev.target.files[0];
-        if (!file) return;
-
-        const arrayBuffer = await file.arrayBuffer();
-        
-        const newPads = [...pads];
-        newPads[selectedPad] = {
-          original: arrayBuffer,
-          processed: arrayBuffer,
-          volume: 1,
-          trimStart: 0,
-          trimEnd: 1,
+      function MobileSampler() {
+        const [pads, setPads] = useState(Array(16).fill(null));
+        const [selectedPad, setSelectedPad] = useState(null);
+        const [isRecording, setIsRecording] = useState(false);
+        const [playingPads, setPlayingPads] = useState(new Set());
+        const [editingPad, setEditingPad] = useState(null);
+        const [editParams, setEditParams] = useState({ 
+          volume: 1, 
+          trimStart: 0, 
+          trimEnd: 1, 
           normalize: false,
           loop: false,
           playMode: 'exclusive',
           mutePads: []
+        });
+        const [mutedPads, setMutedPads] = useState(new Set());
+        const [isRecordingTrack, setIsRecordingTrack] = useState(false);
+        const [showExportModal, setShowExportModal] = useState(false);
+        const [exportFormat, setExportFormat] = useState('wav');
+        const [exportSampleRate, setExportSampleRate] = useState(48000);
+        const [waveformData, setWaveformData] = useState(null);
+        const [zoomLevel, setZoomLevel] = useState(1);
+        const [lastPlayedPad, setLastPlayedPad] = useState(null);
+        
+        const mediaRecorder = useRef(null);
+        const audioChunks = useRef([]);
+        const audioContextRef = useRef(null);
+        const audioElements = useRef({});
+        const trackRecorder = useRef(null);
+        const trackStream = useRef(null);
+        const fileInputRef = useRef(null);
+        const canvasRef = useRef(null);
+
+        useEffect(() => {
+          audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+          return () => {
+            if (audioContextRef.current) {
+              audioContextRef.current.close();
+            }
+          };
+        }, []);
+
+        const drawWaveform = () => {
+          if (!canvasRef.current || !waveformData) return;
+          
+          const canvas = canvasRef.current;
+          const ctx = canvas.getContext('2d');
+          const width = canvas.width;
+          const height = canvas.height;
+          
+          ctx.fillStyle = '#1f2937';
+          ctx.fillRect(0, 0, width, height);
+          
+          ctx.strokeStyle = '#ef4444';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(0, height / 2);
+          ctx.lineTo(width, height / 2);
+          ctx.stroke();
+          
+          const startIdx = Math.floor((waveformData.length * editParams.trimStart) / zoomLevel);
+          const endIdx = Math.floor((waveformData.length * editParams.trimEnd) / zoomLevel);
+          const visibleData = waveformData.slice(startIdx, endIdx);
+          
+          ctx.strokeStyle = '#3b82f6';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          
+          const step = width / visibleData.length;
+          
+          for (let i = 0; i < visibleData.length; i++) {
+            const x = i * step;
+            const y = height / 2 - (visibleData[i] * height / 2);
+            
+            if (i === 0) {
+              ctx.moveTo(x, y);
+            } else {
+              ctx.lineTo(x, y);
+            }
+          }
+          
+          ctx.stroke();
+          
+          ctx.fillStyle = 'rgba(34, 197, 94, 0.3)';
+          ctx.fillRect(0, 0, width, height);
+          
+          const trimStartX = editParams.trimStart * width;
+          const trimEndX = editParams.trimEnd * width;
+          
+          ctx.fillStyle = 'rgba(239, 68, 68, 0.3)';
+          ctx.fillRect(0, 0, trimStartX, height);
+          ctx.fillRect(trimEndX, 0, width - trimEndX, height);
         };
-        setPads(newPads);
-        
-        ev.target.value = '';
-      };
 
-      const processAudio = async (padData, params) => {
-        const audioBuffer = await audioContextRef.current.decodeAudioData(padData.original.slice(0));
-        const { trimStart, trimEnd, volume, normalize } = params;
-        
-        const startSample = Math.floor(trimStart * audioBuffer.length);
-        const endSample = Math.floor(trimEnd * audioBuffer.length);
-        const newLength = endSample - startSample;
-        
-        const processedBuffer = audioContextRef.current.createBuffer(
-          audioBuffer.numberOfChannels,
-          newLength,
-          audioBuffer.sampleRate
-        );
-
-        for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
-          const inputData = audioBuffer.getChannelData(ch);
-          const outputData = processedBuffer.getChannelData(ch);
-          
-          let max = 0;
-          for (let i = startSample; i < endSample; i++) {
-            max = Math.max(max, Math.abs(inputData[i]));
+        useEffect(() => {
+          if (editingPad !== null && waveformData && canvasRef.current) {
+            drawWaveform();
           }
-          
-          const targetPeak = 0.989;
-          const normFactor = normalize && max > 0 ? targetPeak / max : 1;
-          
-          for (let i = 0; i < newLength; i++) {
-            outputData[i] = inputData[startSample + i] * normFactor * volume;
+        });
+
+        const startRecording = async () => {
+          if (selectedPad === null) {
+            alert('Please select a pad first');
+            return;
           }
-        }
 
-        const offlineContext = new OfflineAudioContext(
-          processedBuffer.numberOfChannels,
-          processedBuffer.length,
-          processedBuffer.sampleRate
-        );
-        
-        const source = offlineContext.createBufferSource();
-        source.buffer = processedBuffer;
-        source.connect(offlineContext.destination);
-        source.start();
-        
-        const rendered = await offlineContext.startRendering();
-        const wavBlob = audioBufferToWav(rendered);
-        return await wavBlob.arrayBuffer();
-      };
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorder.current = new MediaRecorder(stream);
+            audioChunks.current = [];
 
-      const generateWaveformData = async (arrayBuffer) => {
-        const audioBuffer = await audioContextRef.current.decodeAudioData(arrayBuffer.slice(0));
-        const rawData = audioBuffer.getChannelData(0);
-        const samples = 1000;
-        const blockSize = Math.floor(rawData.length / samples);
-        const filteredData = [];
-        
-        for (let i = 0; i < samples; i++) {
-          let blockStart = blockSize * i;
-          let sum = 0;
-          for (let j = 0; j < blockSize; j++) {
-            sum += Math.abs(rawData[blockStart + j]);
+            mediaRecorder.current.ondataavailable = (ev) => {
+              audioChunks.current.push(ev.data);
+            };
+
+            mediaRecorder.current.onstop = async () => {
+              const blob = new Blob(audioChunks.current, { type: 'audio/webm' });
+              const arrayBuffer = await blob.arrayBuffer();
+              
+              const newPads = [...pads];
+              newPads[selectedPad] = {
+                original: arrayBuffer,
+                processed: arrayBuffer,
+                volume: 1,
+                trimStart: 0,
+                trimEnd: 1,
+                normalize: false,
+                loop: false,
+                playMode: 'exclusive',
+                mutePads: []
+              };
+              setPads(newPads);
+              
+              stream.getTracks().forEach(track => track.stop());
+            };
+
+            mediaRecorder.current.start();
+            setIsRecording(true);
+          } catch (err) {
+            alert('Microphone access denied: ' + err.message);
           }
-          filteredData.push(sum / blockSize);
-        }
-        
-        return filteredData;
-      };
+        };
 
-      const audioBufferToWav = (buffer, sampleRate = null) => {
-        const targetRate = sampleRate || buffer.sampleRate;
-        const numChannels = buffer.numberOfChannels;
-        const format = 1;
-        const bitDepth = 16;
-        
-        const bytesPerSample = bitDepth / 8;
-        const blockAlign = numChannels * bytesPerSample;
-        
-        let data;
-        if (targetRate !== buffer.sampleRate) {
-          const ratio = targetRate / buffer.sampleRate;
-          const newLength = Math.floor(buffer.length * ratio);
-          data = new Float32Array(newLength * numChannels);
+        const stopRecording = () => {
+          if (mediaRecorder.current && isRecording) {
+            mediaRecorder.current.stop();
+            setIsRecording(false);
+          }
+        };
+
+        const handleFileUpload = async (ev) => {
+          if (selectedPad === null) {
+            alert('Please select a pad first');
+            return;
+          }
+
+          const file = ev.target.files[0];
+          if (!file) return;
+
+          const arrayBuffer = await file.arrayBuffer();
           
-          for (let ch = 0; ch < numChannels; ch++) {
-            const channelData = buffer.getChannelData(ch);
+          const newPads = [...pads];
+          newPads[selectedPad] = {
+            original: arrayBuffer,
+            processed: arrayBuffer,
+            volume: 1,
+            trimStart: 0,
+            trimEnd: 1,
+            normalize: false,
+            loop: false,
+            playMode: 'exclusive',
+            mutePads: []
+          };
+          setPads(newPads);
+          
+          ev.target.value = '';
+        };
+
+        const processAudio = async (padData, params) => {
+          const audioBuffer = await audioContextRef.current.decodeAudioData(padData.original.slice(0));
+          const { trimStart, trimEnd, volume, normalize } = params;
+          
+          const startSample = Math.floor(trimStart * audioBuffer.length);
+          const endSample = Math.floor(trimEnd * audioBuffer.length);
+          const newLength = endSample - startSample;
+          
+          const processedBuffer = audioContextRef.current.createBuffer(
+            audioBuffer.numberOfChannels,
+            newLength,
+            audioBuffer.sampleRate
+          );
+
+          for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
+            const inputData = audioBuffer.getChannelData(ch);
+            const outputData = processedBuffer.getChannelData(ch);
+            
+            let max = 0;
+            for (let i = startSample; i < endSample; i++) {
+              max = Math.max(max, Math.abs(inputData[i]));
+            }
+            
+            const targetPeak = 0.989;
+            const normFactor = normalize && max > 0 ? targetPeak / max : 1;
+            
             for (let i = 0; i < newLength; i++) {
-              const srcIndex = i / ratio;
-              const srcIndexFloor = Math.floor(srcIndex);
-              const srcIndexCeil = Math.min(srcIndexFloor + 1, buffer.length - 1);
-              const t = srcIndex - srcIndexFloor;
-              const interpolated = channelData[srcIndexFloor] * (1 - t) + channelData[srcIndexCeil] * t;
-              data[i * numChannels + ch] = interpolated;
+              outputData[i] = inputData[startSample + i] * normFactor * volume;
             }
           }
-        } else {
-          data = new Float32Array(buffer.length * numChannels);
-          for (let ch = 0; ch < numChannels; ch++) {
-            const channelData = buffer.getChannelData(ch);
-            for (let i = 0; i < buffer.length; i++) {
-              data[i * numChannels + ch] = channelData[i];
-            }
-          }
-        }
-        
-        const dataLength = data.length * bytesPerSample;
-        const arrayBuffer = new ArrayBuffer(44 + dataLength);
-        const view = new DataView(arrayBuffer);
-        
-        const writeString = (offset, string) => {
-          for (let i = 0; i < string.length; i++) {
-            view.setUint8(offset + i, string.charCodeAt(i));
-          }
-        };
-        
-        writeString(0, 'RIFF');
-        view.setUint32(4, 36 + dataLength, true);
-        writeString(8, 'WAVE');
-        writeString(12, 'fmt ');
-        view.setUint32(16, 16, true);
-        view.setUint16(20, format, true);
-        view.setUint16(22, numChannels, true);
-        view.setUint32(24, targetRate, true);
-        view.setUint32(28, targetRate * blockAlign, true);
-        view.setUint16(32, blockAlign, true);
-        view.setUint16(34, bitDepth, true);
-        writeString(36, 'data');
-        view.setUint32(40, dataLength, true);
-        
-        let offset = 44;
-        for (let i = 0; i < data.length; i++) {
-          const sample = Math.max(-1, Math.min(1, data[i]));
-          view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
-          offset += 2;
-        }
-        
-        return new Blob([arrayBuffer], { type: 'audio/wav' });
-      };
 
-      const audioBufferToAiff = (buffer, sampleRate = null) => {
-        const targetRate = sampleRate || buffer.sampleRate;
-        const numChannels = buffer.numberOfChannels;
-        const bitDepth = 16;
-        const bytesPerSample = bitDepth / 8;
-        
-        let data;
-        if (targetRate !== buffer.sampleRate) {
-          const ratio = targetRate / buffer.sampleRate;
-          const newLength = Math.floor(buffer.length * ratio);
-          data = new Float32Array(newLength * numChannels);
+          const offlineContext = new OfflineAudioContext(
+            processedBuffer.numberOfChannels,
+            processedBuffer.length,
+            processedBuffer.sampleRate
+          );
           
-          for (let ch = 0; ch < numChannels; ch++) {
-            const channelData = buffer.getChannelData(ch);
-            for (let i = 0; i < newLength; i++) {
-              const srcIndex = i / ratio;
-              const srcIndexFloor = Math.floor(srcIndex);
-              const srcIndexCeil = Math.min(srcIndexFloor + 1, buffer.length - 1);
-              const t = srcIndex - srcIndexFloor;
-              const interpolated = channelData[srcIndexFloor] * (1 - t) + channelData[srcIndexCeil] * t;
-              data[i * numChannels + ch] = interpolated;
+          const source = offlineContext.createBufferSource();
+          source.buffer = processedBuffer;
+          source.connect(offlineContext.destination);
+          source.start();
+          
+          const rendered = await offlineContext.startRendering();
+          const wavBlob = audioBufferToWav(rendered);
+          return await wavBlob.arrayBuffer();
+        };
+
+        const generateWaveformData = async (arrayBuffer) => {
+          const audioBuffer = await audioContextRef.current.decodeAudioData(arrayBuffer.slice(0));
+          const rawData = audioBuffer.getChannelData(0);
+          const samples = 1000;
+          const blockSize = Math.floor(rawData.length / samples);
+          const filteredData = [];
+          
+          for (let i = 0; i < samples; i++) {
+            let blockStart = blockSize * i;
+            let sum = 0;
+            for (let j = 0; j < blockSize; j++) {
+              sum += Math.abs(rawData[blockStart + j]);
+            }
+            filteredData.push(sum / blockSize);
+          }
+          
+          return filteredData;
+        };
+
+        const audioBufferToWav = (buffer, sampleRate) => {
+          const targetRate = sampleRate || buffer.sampleRate;
+          const numChannels = buffer.numberOfChannels;
+          const format = 1;
+          const bitDepth = 16;
+          
+          const bytesPerSample = bitDepth / 8;
+          const blockAlign = numChannels * bytesPerSample;
+          
+          let data;
+          if (targetRate !== buffer.sampleRate) {
+            const ratio = targetRate / buffer.sampleRate;
+            const newLength = Math.floor(buffer.length * ratio);
+            data = new Float32Array(newLength * numChannels);
+            
+            for (let ch = 0; ch < numChannels; ch++) {
+              const channelData = buffer.getChannelData(ch);
+              for (let i = 0; i < newLength; i++) {
+                const srcIndex = i / ratio;
+                const srcIndexFloor = Math.floor(srcIndex);
+                const srcIndexCeil = Math.min(srcIndexFloor + 1, buffer.length - 1);
+                const t = srcIndex - srcIndexFloor;
+                const interpolated = channelData[srcIndexFloor] * (1 - t) + channelData[srcIndexCeil] * t;
+                data[i * numChannels + ch] = interpolated;
+              }
+            }
+          } else {
+            data = new Float32Array(buffer.length * numChannels);
+            for (let ch = 0; ch < numChannels; ch++) {
+              const channelData = buffer.getChannelData(ch);
+              for (let i = 0; i < buffer.length; i++) {
+                data[i * numChannels + ch] = channelData[i];
+              }
             }
           }
-        } else {
-          data = new Float32Array(buffer.length * numChannels);
-          for (let ch = 0; ch < numChannels; ch++) {
-            const channelData = buffer.getChannelData(ch);
-            for (let i = 0; i < buffer.length; i++) {
-              data[i * numChannels + ch] = channelData[i];
+          
+          const dataLength = data.length * bytesPerSample;
+          const arrayBuffer = new ArrayBuffer(44 + dataLength);
+          const view = new DataView(arrayBuffer);
+          
+          const writeString = (offset, string) => {
+            for (let i = 0; i < string.length; i++) {
+              view.setUint8(offset + i, string.charCodeAt(i));
             }
-          }
-        }
-        
-        const numFrames = data.length / numChannels;
-        const ssndSize = numFrames * numChannels * bytesPerSample + 8;
-        const commSize = 18;
-        const formSize = 4 + 8 + commSize + 8 + ssndSize;
-        
-        const arrayBuffer = new ArrayBuffer(8 + formSize);
-        const view = new DataView(arrayBuffer);
-        
-        const writeString = (offset, string) => {
-          for (let i = 0; i < string.length; i++) {
-            view.setUint8(offset + i, string.charCodeAt(i));
-          }
-        };
-        
-        const writeExtended = (offset, rate) => {
-          const exponent = 16414;
-          view.setUint16(offset, exponent, false);
-          view.setUint32(offset + 2, (rate >>> 16) & 0xFFFFFFFF, false);
-          view.setUint32(offset + 6, (rate & 0xFFFF) << 16, false);
-        };
-        
-        writeString(0, 'FORM');
-        view.setUint32(4, formSize, false);
-        writeString(8, 'AIFF');
-        writeString(12, 'COMM');
-        view.setUint32(16, commSize, false);
-        view.setUint16(20, numChannels, false);
-        view.setUint32(22, numFrames, false);
-        view.setUint16(26, bitDepth, false);
-        writeExtended(28, targetRate);
-        writeString(38, 'SSND');
-        view.setUint32(42, ssndSize, false);
-        view.setUint32(46, 0, false);
-        view.setUint32(50, 0, false);
-        
-        let offset = 54;
-        for (let i = 0; i < numFrames; i++) {
-          for (let ch = 0; ch < numChannels; ch++) {
-            const sample = Math.max(-1, Math.min(1, data[i * numChannels + ch]));
-            view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, false);
+          };
+          
+          writeString(0, 'RIFF');
+          view.setUint32(4, 36 + dataLength, true);
+          writeString(8, 'WAVE');
+          writeString(12, 'fmt ');
+          view.setUint32(16, 16, true);
+          view.setUint16(20, format, true);
+          view.setUint16(22, numChannels, true);
+          view.setUint32(24, targetRate, true);
+          view.setUint32(28, targetRate * blockAlign, true);
+          view.setUint16(32, blockAlign, true);
+          view.setUint16(34, bitDepth, true);
+          writeString(36, 'data');
+          view.setUint32(40, dataLength, true);
+          
+          let offset = 44;
+          for (let i = 0; i < data.length; i++) {
+            const sample = Math.max(-1, Math.min(1, data[i]));
+            view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
             offset += 2;
           }
-        }
-        
-        return new Blob([arrayBuffer], { type: 'audio/aiff' });
-      };
+          
+          return new Blob([arrayBuffer], { type: 'audio/wav' });
+        };
 
-      const playPad = async (index) => {
-        if (!pads[index] || mutedPads.has(index)) return;
+        const audioBufferToAiff = (buffer, sampleRate) => {
+          const targetRate = sampleRate || buffer.sampleRate;
+          const numChannels = buffer.numberOfChannels;
+          const bitDepth = 16;
+          const bytesPerSample = bitDepth / 8;
+          
+          let data;
+          if (targetRate !== buffer.sampleRate) {
+            const ratio = targetRate / buffer.sampleRate;
+            const newLength = Math.floor(buffer.length * ratio);
+            data = new Float32Array(newLength * numChannels);
+            
+            for (let ch = 0; ch < numChannels; ch++) {
+              const channelData = buffer.getChannelData(ch);
+              for (let i = 0; i < newLength; i++) {
+                const srcIndex = i / ratio;
+                const srcIndexFloor = Math.floor(srcIndex);
+                const srcIndexCeil = Math.min(srcIndexFloor + 1, buffer.length - 1);
+                const t = srcIndex - srcIndexFloor;
+                const interpolated = channelData[srcIndexFloor] * (1 - t) + channelData[srcIndexCeil] * t;
+                data[i * numChannels + ch] = interpolated;
+              }
+            }
+          } else {
+            data = new Float32Array(buffer.length * numChannels);
+            for (let ch = 0; ch < numChannels; ch++) {
+              const channelData = buffer.getChannelData(ch);
+              for (let i = 0; i < buffer.length; i++) {
+                data[i * numChannels + ch] = channelData[i];
+              }
+            }
+          }
+          
+          const numFrames = data.length / numChannels;
+          const ssndSize = numFrames * numChannels * bytesPerSample + 8;
+          const commSize = 18;
+          const formSize = 4 + 8 + commSize + 8 + ssndSize;
+          
+          const arrayBuffer = new ArrayBuffer(8 + formSize);
+          const view = new DataView(arrayBuffer);
+          
+          const writeString = (offset, string) => {
+            for (let i = 0; i < string.length; i++) {
+              view.setUint8(offset + i, string.charCodeAt(i));
+            }
+          };
+          
+          const writeExtended = (offset, rate) => {
+            const exponent = 16414;
+            view.setUint16(offset, exponent, false);
+            view.setUint32(offset + 2, (rate >>> 16) & 0xFFFFFFFF, false);
+            view.setUint32(offset + 6, (rate & 0xFFFF) << 16, false);
+          };
+          
+          writeString(0, 'FORM');
+          view.setUint32(4, formSize, false);
+          writeString(8, 'AIFF');
+          writeString(12, 'COMM');
+          view.setUint32(16, commSize, false);
+          view.setUint16(20, numChannels, false);
+          view.setUint32(22, numFrames, false);
+          view.setUint16(26, bitDepth, false);
+          writeExtended(28, targetRate);
+          writeString(38, 'SSND');
+          view.setUint32(42, ssndSize, false);
+          view.setUint32(46, 0, false);
+          view.setUint32(50, 0, false);
+          
+          let offset = 54;
+          for (let i = 0; i < numFrames; i++) {
+            for (let ch = 0; ch < numChannels; ch++) {
+              const sample = Math.max(-1, Math.min(1, data[i * numChannels + ch]));
+              view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, false);
+              offset += 2;
+            }
+          }
+          
+          return new Blob([arrayBuffer], { type: 'audio/aiff' });
+        };
 
-        const padData = pads[index];
-        
-        if (padData.playMode === 'exclusive' && lastPlayedPad !== null && audioElements.current[lastPlayedPad]) {
-          audioElements.current[lastPlayedPad].pause();
-          audioElements.current[lastPlayedPad].currentTime = 0;
-          setPlayingPads(prev => {
+        const playPad = async (index) => {
+          if (!pads[index] || mutedPads.has(index)) return;
+
+          const padData = pads[index];
+          
+          if (padData.playMode === 'exclusive' && lastPlayedPad !== null && audioElements.current[lastPlayedPad]) {
+            audioElements.current[lastPlayedPad].pause();
+            audioElements.current[lastPlayedPad].currentTime = 0;
+            setPlayingPads(prev => {
+              const newSet = new Set(prev);
+              newSet.delete(lastPlayedPad);
+              return newSet;
+            });
+          }
+          
+          padData.mutePads.forEach(padIdx => {
+            if (audioElements.current[padIdx]) {
+              audioElements.current[padIdx].pause();
+              audioElements.current[padIdx].currentTime = 0;
+              setPlayingPads(prev => {
+                const newSet = new Set(prev);
+                newSet.delete(padIdx);
+                return newSet;
+              });
+            }
+          });
+
+          const audioData = padData.processed || padData.original;
+          const blob = new Blob([audioData], { type: 'audio/wav' });
+          const url = URL.createObjectURL(blob);
+          
+          const audio = new Audio(url);
+          audio.loop = padData.loop || false;
+          audioElements.current[index] = audio;
+          
+          setPlayingPads(prev => new Set(prev).add(index));
+          setLastPlayedPad(index);
+          
+          audio.onended = () => {
+            if (!audio.loop) {
+              setPlayingPads(prev => {
+                const newSet = new Set(prev);
+                newSet.delete(index);
+                return newSet;
+              });
+              URL.revokeObjectURL(url);
+            }
+          };
+          
+          audio.play();
+        };
+
+        const clearPad = (index) => {
+          const newPads = [...pads];
+          newPads[index] = null;
+          setPads(newPads);
+          if (selectedPad === index) setSelectedPad(null);
+          if (editingPad === index) setEditingPad(null);
+        };
+
+        const openEditor = async (index) => {
+          if (!pads[index]) return;
+          setEditingPad(index);
+          setEditParams({
+            volume: pads[index].volume || 1,
+            trimStart: pads[index].trimStart || 0,
+            trimEnd: pads[index].trimEnd || 1,
+            normalize: pads[index].normalize || false,
+            loop: pads[index].loop || false,
+            playMode: pads[index].playMode || 'exclusive',
+            mutePads: pads[index].mutePads || []
+          });
+          
+          const waveData = await generateWaveformData(pads[index].original);
+          setWaveformData(waveData);
+          setZoomLevel(1);
+        };
+
+        const applyEdit = async () => {
+          if (editingPad === null) return;
+          
+          const padData = pads[editingPad];
+          const processed = await processAudio(padData, editParams);
+          
+          const newPads = [...pads];
+          newPads[editingPad] = {
+            ...padData,
+            processed,
+            ...editParams
+          };
+          setPads(newPads);
+          setEditingPad(null);
+          setWaveformData(null);
+        };
+
+        const toggleMute = (index) => {
+          setMutedPads(prev => {
             const newSet = new Set(prev);
-            newSet.delete(lastPlayedPad);
+            if (newSet.has(index)) {
+              newSet.delete(index);
+            } else {
+              newSet.add(index);
+            }
             return newSet;
           });
-        }
-        
-        padData.mutePads.forEach(padIdx => {
-          if (audioElements.current[padIdx]) {
-            audioElements.current[padIdx].pause();
-            audioElements.current[padIdx].currentTime = 0;
-            setPlayingPads(prev => {
-              const newSet = new Set(prev);
-              newSet.delete(padIdx);
-              return newSet;
-            });
-          }
-        });
+        };
 
-        const audioData = padData.processed || padData.original;
-        const blob = new Blob([audioData], { type: 'audio/wav' });
-        const url = URL.createObjectURL(blob);
-        
-        const audio = new Audio(url);
-        audio.loop = padData.loop || false;
-        audioElements.current[index] = audio;
-        
-        setPlayingPads(prev => new Set(prev).add(index));
-        setLastPlayedPad(index);
-        
-        audio.onended = () => {
-          if (!audio.loop) {
-            setPlayingPads(prev => {
-              const newSet = new Set(prev);
-              newSet.delete(index);
-              return newSet;
-            });
-            URL.revokeObjectURL(url);
+        const toggleMutePad = (padIndex) => {
+          setEditParams(prev => {
+            const mutePads = [...prev.mutePads];
+            const idx = mutePads.indexOf(padIndex);
+            if (idx > -1) {
+              mutePads.splice(idx, 1);
+            } else {
+              mutePads.push(padIndex);
+            }
+            return { ...prev, mutePads };
+          });
+        };
+
+        const startTrackRecording = async () => {
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const destNode = audioContextRef.current.createMediaStreamDestination();
+            trackStream.current = destNode.stream;
+            
+            trackRecorder.current = new MediaRecorder(trackStream.current);
+            audioChunks.current = [];
+
+            trackRecorder.current.ondataavailable = (ev) => {
+              audioChunks.current.push(ev.data);
+            };
+
+            trackRecorder.current.onstop = () => {
+              setShowExportModal(true);
+            };
+
+            trackRecorder.current.start();
+            setIsRecordingTrack(true);
+          } catch (err) {
+            alert('Failed to start track recording: ' + err.message);
           }
         };
-        
-        audio.play();
-      };
 
-      const clearPad = (index) => {
-        const newPads = [...pads];
-        newPads[index] = null;
-        setPads(newPads);
-        if (selectedPad === index) setSelectedPad(null);
-        if (editingPad === index) setEditingPad(null);
-      };
-
-      const openEditor = async (index) => {
-        if (!pads[index]) return;
-        setEditingPad(index);
-        setEditParams({
-          volume: pads[index].volume || 1,
-          trimStart: pads[index].trimStart || 0,
-          trimEnd: pads[index].trimEnd || 1,
-          normalize: pads[index].normalize || false,
-          loop: pads[index].loop || false,
-          playMode: pads[index].playMode || 'exclusive',
-          mutePads: pads[index].mutePads || []
-        });
-        
-        const waveData = await generateWaveformData(pads[index].original);
-        setWaveformData(waveData);
-        setZoomLevel(1);
-      };
-
-      const applyEdit = async () => {
-        if (editingPad === null) return;
-        
-        const padData = pads[editingPad];
-        const processed = await processAudio(padData, editParams);
-        
-        const newPads = [...pads];
-        newPads[editingPad] = {
-          ...padData,
-          processed,
-          ...editParams
+        const stopTrackRecording = () => {
+          if (trackRecorder.current && isRecordingTrack) {
+            trackRecorder.current.stop();
+            setIsRecordingTrack(false);
+          }
         };
-        setPads(newPads);
-        setEditingPad(null);
-        setWaveformData(null);
-      };
 
-      const toggleMute = (index) => {
-        setMutedPads(prev => {
-          const newSet = new Set(prev);
-          if (newSet.has(index)) {
-            newSet.delete(index);
-          } else {
-            newSet.add(index);
-          }
-          return newSet;
-        });
-      };
-
-      const toggleMutePad = (padIndex) => {
-        setEditParams(prev => {
-          const mutePads = [...prev.mutePads];
-          const idx = mutePads.indexOf(padIndex);
-          if (idx > -1) {
-            mutePads.splice(idx, 1);
-          } else {
-            mutePads.push(padIndex);
-          }
-          return { ...prev, mutePads };
-        });
-      };
-
-      const startTrackRecording = async () => {
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          const destNode = audioContextRef.current.createMediaStreamDestination();
-          trackStream.current = destNode.stream;
+        const exportTrack = async () => {
+          const blob = new Blob(audioChunks.current, { type: 'audio/webm' });
+          const arrayBuffer = await blob.arrayBuffer();
+          const audioBuffer = await audioContextRef.current.decodeAudioData(arrayBuffer);
           
-          trackRecorder.current = new MediaRecorder(trackStream.current);
+          let finalBlob;
+          let filename;
+          
+          if (exportFormat === 'wav') {
+            finalBlob = audioBufferToWav(audioBuffer, exportSampleRate);
+            filename = 'beat_' + Date.now() + '.wav';
+          } else if (exportFormat === 'aiff') {
+            finalBlob = audioBufferToAiff(audioBuffer, exportSampleRate);
+            filename = 'beat_' + Date.now() + '.aiff';
+          } else if (exportFormat === 'mp3') {
+            finalBlob = audioBufferToWav(audioBuffer, exportSampleRate);
+            filename = 'beat_' + Date.now() + '.wav';
+            alert('Note: Direct MP3 encoding requires additional libraries. Exporting as WAV instead.');
+          }
+          
+          const url = URL.createObjectURL(finalBlob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = filename;
+          a.click();
+          URL.revokeObjectURL(url);
+          
+          setShowExportModal(false);
           audioChunks.current = [];
+        };
 
-          trackRecorder.current.ondataavailable = (ev) => {
-            audioChunks.current.push(ev.data);
-          };
+        return e('div', { className: 'min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 p-4 pb-48' },
+          e('h1', { className: 'text-3xl font-bold text-white text-center mb-6' }, 'Audio Sampler'),
+          
+          isRecordingTrack && e('div', { className: 'bg-red-600 text-white text-center py-2 rounded-lg mb-4 animate-pulse font-bold' }, '🔴 RECORDING TRACK'),
 
-          trackRecorder.current.onstop = () => {
-            setShowExportModal(true);
-          };
-
-          trackRecorder.current.start();
-          setIsRecordingTrack(true);
-        } catch (err) {
-          console.error('Failed to start track recording:', err);
-        }
-      };
-
-      const stopTrackRecording = () => {
-        if (trackRecorder.current && isRecordingTrack) {
-          trackRecorder.current.stop();
-          setIsRecordingTrack(false);
-        }
-      };
-
-      const exportTrack = async () => {
-        const blob = new Blob(audioChunks.current, { type: 'audio/webm' });
-        const arrayBuffer = await blob.arrayBuffer();
-        const audioBuffer = await audioContextRef.current.decodeAudioData(arrayBuffer);
-        
-        let finalBlob;
-        let filename;
-        
-        if (exportFormat === 'wav') {
-          finalBlob = audioBufferToWav(audioBuffer, exportSampleRate);
-          filename = `beat_${Date.now()}.wav`;
-        } else if (exportFormat === 'aiff') {
-          finalBlob = audioBufferToAiff(audioBuffer, exportSampleRate);
-          filename = `beat_${Date.now()}.aiff`;
-        } else if (exportFormat === 'mp3') {
-          finalBlob = audioBufferToWav(audioBuffer, exportSampleRate);
-          filename = `beat_${Date.now()}.wav`;
-          alert('Note: Direct MP3 encoding requires additional libraries. Exporting as WAV instead.');
-        }
-        
-        const url = URL.createObjectURL(finalBlob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        a.click();
-        URL.revokeObjectURL(url);
-        
-        setShowExportModal(false);
-        audioChunks.current = [];
-      };
-
-      return e('div', { className: 'min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 p-4 pb-48' },
-        e('h1', { className: 'text-3xl font-bold text-white text-center mb-6' }, 'Audio Sampler'),
-        
-        isRecordingTrack && e('div', { className: 'bg-red-600 text-white text-center py-2 rounded-lg mb-4 animate-pulse font-bold' }, '🔴 RECORDING TRACK'),
-
-        e('div', { className: 'grid grid-cols-4 gap-3 max-w-md mx-auto mb-6' },
-          pads.map((pad, i) => 
-            e('div', { key: i, className: 'relative' },
-              e('button', {
-                onClick: () => pad ? playPad(i) : setSelectedPad(i),
-                className: `w-full aspect-square rounded-xl font-bold text-lg transition-all ${selectedPad === i ? 'ring-4 ring-blue-400' : ''} ${playingPads.has(i) ? 'bg-green-500 scale-95' : pad ? 'bg-blue-600 hover:bg-blue-500' : 'bg-gray-700 hover:bg-gray-600'} ${mutedPads.has(i) ? 'opacity-50' : ''} text-white shadow-lg active:scale-90`
-              }, 
-                i + 1,
-                pad?.loop && e('span', { className: 'absolute top-1 left-1 text-xs' }, '🔁')
-              ),
-              
-              pad && e('div', { className: 'absolute top-1 right-1 flex gap-1' },
+          e('div', { className: 'grid grid-cols-4 gap-3 max-w-md mx-auto mb-6' },
+            pads.map((pad, i) => 
+              e('div', { key: i, className: 'relative' },
                 e('button', {
-                  onClick: (ev) => { ev.stopPropagation(); toggleMute(i); },
-                  className: 'bg-gray-900 bg-opacity-80 p-1 rounded text-white text-xs'
-                }, mutedPads.has(i) ? '🔇' : '🔊'),
-                e('button', {
-                  onClick: (ev) => { ev.stopPropagation(); openEditor(i); },
-                  className: 'bg-gray-900 bg-opacity-80 p-1 rounded text-white text-xs'
-                }, '✏️'),
-                e('button', {
-                  onClick: (ev) => { ev.stopPropagation(); clearPad(i); },
-                  className: 'bg-red-600 bg-opacity-80 p-1 rounded text-white text-xs'
-                }, '🗑️')
+                  onClick: () => pad ? playPad(i) : setSelectedPad(i),
+                  className: 'w-full aspect-square rounded-xl font-bold text-lg transition-all ' + 
+                    (selectedPad === i ? 'ring-4 ring-blue-400 ' : '') +
+                    (playingPads.has(i) ? 'bg-green-500 scale-95 ' : pad ? 'bg-blue-600 hover:bg-blue-500 ' : 'bg-gray-700 hover:bg-gray-600 ') +
+                    (mutedPads.has(i) ? 'opacity-50 ' : '') +
+                    'text-white shadow-lg active:scale-90'
+                }, 
+                  i + 1,
+                  pad && pad.loop && e('span', { className: 'absolute top-1 left-1 text-xs' }, '🔁')
+                ),
+                
+                pad && e('div', { className: 'absolute top-1 right-1 flex gap-1' },
+                  e('button', {
+                    onClick: (ev) => { ev.stopPropagation(); toggleMute(i); },
+                    className: 'bg-gray-900 bg-opacity-80 p-1 rounded text-white text-xs'
+                  }, mutedPads.has(i) ? '🔇' : '🔊'),
+                  e('button', {
+                    onClick: (ev) => { ev.stopPropagation(); openEditor(i); },
+                    className: 'bg-gray-900 bg-opacity-80 p-1 rounded text-white text-xs'
+                  }, '✏️'),
+                  e('button', {
+                    onClick: (ev) => { ev.stopPropagation(); clearPad(i); },
+                    className: 'bg-red-600 bg-opacity-80 p-1 rounded text-white text-xs'
+                  }, '🗑️')
+                )
               )
             )
-          )
-        ),
+          ),
 
-        e('div', { className: 'fixed bottom-0 left-0 right-0 bg-gray-800 p-4 shadow-lg' },
-          e('div', { className: 'max-w-md mx-auto space-y-3' },
-            e('div', { className: 'text-white text-center text-sm' },
-              selectedPad !== null ? `Pad ${selectedPad + 1} selected` : 'Select a pad'
+          e('div', { className: 'fixed bottom-0 left-0 right-0 bg-gray-800 p-4 shadow-lg' },
+            e('div', { className: 'max-w-md mx-auto space-y-3' },
+              e('div', { className: 'text-white text-center text-sm' },
+                selectedPad !== null ? 'Pad ' + (selectedPad + 1) + ' selected' : 'Select a pad'
+              ),
+              
+              e('div', { className: 'grid grid-cols-2 gap-2' },
+                e('button', {
+                  onClick: isRecording ? stopRecording : startRecording,
+                  disabled: selectedPad === null,
+                  className: 'py-3 rounded-xl font-bold text-white shadow-lg transition-all active:scale-95 ' +
+                    (isRecording ? 'bg-red-600 animate-pulse' : 'bg-blue-600 hover:bg-blue-500') +
+                    ' disabled:bg-gray-600 disabled:cursor-not-allowed'
+                }, isRecording ? '⏹️ Stop' : '🎤 Record'),
+
+                e('button', {
+                  onClick: () => fileInputRef.current && fileInputRef.current.click(),
+                  disabled: selectedPad === null,
+                  className: 'py-3 rounded-xl font-bold text-white shadow-lg bg-purple-600 hover:bg-purple-500 transition-all active:scale-95 disabled:bg-gray-600 disabled:cursor-not-allowed'
+                }, '📤 Upload')
+              ),
+
+              e('button', {
+                onClick: isRecordingTrack ? stopTrackRecording : startTrackRecording,
+                className: 'w-full py-3 rounded-xl font-bold text-white shadow-lg transition-all active:scale-95 ' +
+                  (isRecordingTrack ? 'bg-red-600 animate-pulse' : 'bg-green-600 hover:bg-green-500')
+              }, isRecordingTrack ? '⏹️ Stop Track Recording' : '⏺️ Record Track')
+            )
+          ),
+
+          e('input', {
+            ref: fileInputRef,
+            type: 'file',
+            accept: 'audio/*',
+            onChange: handleFileUpload,
+            className: 'hidden'
+          }),
+
+          editingPad !== null && e('div', { className: 'fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-4 z-50 overflow-y-auto' },
+            e('div', { className: 'bg-gray-800 rounded-xl p-6 max-w-2xl w-full my-8' },
+              e('div', { className: 'flex justify-between items-center mb-4' },
+                e('h2', { className: 'text-xl font-bold text-white' }, 'Edit Pad ' + (editingPad + 1)),
+                e('button', { onClick: () => { setEditingPad(null); setWaveformData(null); }, className: 'text-white text-2xl' }, '×')
+              ),
+
+              e('div', { className: 'space-y-4' },
+                e('div', { className: 'bg-gray-900 rounded-lg p-4' },
+                  e('div', { className: 'flex justify-between items-center mb-2' },
+                    e('span', { className: 'text-white text-sm' }, 'Waveform (0dB line in red)'),
+                    e('div', { className: 'flex gap-2' },
+                      e('button', {
+                        onClick: () => setZoomLevel(Math.max(1, zoomLevel - 0.5)),
+                        className: 'bg-gray-700 p-2 rounded text-white text-xs'
+                      }, '🔍-'),
+                      e('button', {
+                        onClick: () => setZoomLevel(Math.min(5, zoomLevel + 0.5)),
+                        className: 'bg-gray-700 p-2 rounded text-white text-xs'
+                      }, '🔍+')
+                    )
+                  ),
+                  e('canvas', {
+                    ref: canvasRef,
+                    width: 600,
+                    height: 150,
+                    className: 'w-full bg-gray-950 rounded'
+                  })
+                ),
+
+                e('div', null,
+                  e('label', { className: 'text-white text-sm block mb-2' }, '🔊 Volume: ' + Math.round(editParams.volume * 100) + '%'),
+                  e('input', {​​​​​​​​​​​​​​​​
+                  type: ‘range’,
+                  min: ‘0’,
+                  max: ‘2’,
+                  step: ‘0.1’,
+                  value:
+                  editParams.volume,
+                  onChange: (ev) =>
+                  setEditParams(Object.assign({}, editParams, {volume: parseFloat(ev.target.value)})),
+className: ‘w-full’
+})
+),
+            e('div', null,
+              e('label', { className: 'text-white text-sm block mb-2' }, '✂️ Trim Start: ' + Math.round(editParams.trimStart * 100) + '%'),
+              e('input', {
+                type: 'range',
+                min: '0',
+                max: editParams.trimEnd,
+                step: '0.01',
+                value: editParams.trimStart,
+                onChange: (ev) => setEditParams(Object.assign({}, editParams, {trimStart: parseFloat(ev.target.value)})),
+                className: 'w-full'
+              })
             ),
-            
-            e('div', { className: 'grid grid-cols-2 gap-2' },
-              e('button', {
-                onClick: isRecording ? stopRecording : startRecording,
-                disabled: selectedPad === null,
-                className: `py-3 rounded-xl font-bold text-white shadow-lg transition-all active:scale-95 ${isRecording ? 'bg-red-600 animate-pulse' : 'bg-blue-600 hover:bg-blue-500'} disabled:bg-gray-600 disabled:cursor-not-allowed`
-              }, isRecording ? '⏹️ Stop' : '🎤 Record'),
 
-              e('button', {
-                onClick: () => fileInputRef.current?.click(),
-                disabled: selectedPad === null,
-                className: 'py-3 rounded-xl font-bold text-white shadow-lg bg-purple-600 hover:bg-purple-500 transition-all active:scale-95 disabled:bg-gray-600 disabled:cursor-not-allowed'
-              }, '📤 Upload')
+            e('div', null,
+              e('label', { className: 'text-white text-sm block mb-2' }, '✂️ Trim End: ' + Math.round(editParams.trimEnd * 100) + '%'),
+              e('input', {
+                type: 'range',
+                min: editParams.trimStart,
+                max: '1',
+                step: '0.01',
+                value: editParams.trimEnd,
+                onChange: (ev) => setEditParams(Object.assign({}, editParams, {trimEnd: parseFloat(ev.target.value)})),
+                className: 'w-full'
+              })
+            ),
+
+            e('div', { className: 'flex items-center gap-2' },
+              e('input', {
+                type: 'checkbox',
+                id: 'normalize',
+                checked: editParams.normalize,
+                onChange: (ev) => setEditParams(Object.assign({}, editParams, {normalize: ev.target.checked})),
+                className: 'w-5 h-5'
+              }),
+              e('label', { htmlFor: 'normalize', className: 'text-white' }, 'Normalize Audio (-0.1 dB)')
+            ),
+
+            e('div', { className: 'flex items-center gap-2' },
+              e('input', {
+                type: 'checkbox',
+                id: 'loop',
+                checked: editParams.loop,
+                onChange: (ev) => setEditParams(Object.assign({}, editParams, {loop: ev.target.checked})),
+                className: 'w-5 h-5'
+              }),
+              e('label', { htmlFor: 'loop', className: 'text-white' }, 'Loop Sample')
+            ),
+
+            e('div', null,
+              e('label', { className: 'text-white text-sm block mb-2' }, 'Play Mode'),
+              e('select', {
+                value: editParams.playMode,
+                onChange: (ev) => setEditParams(Object.assign({}, editParams, {playMode: ev.target.value})),
+                className: 'w-full bg-gray-700 text-white p-3 rounded-lg'
+              },
+                e('option', { value: 'exclusive' }, 'Exclusive (stops last played pad)'),
+                e('option', { value: 'full' }, 'Full Shot (plays over last pad)')
+              )
+            ),
+
+            e('div', null,
+              e('label', { className: 'text-white text-sm block mb-2' }, 'Mute Other Pads When Playing'),
+              e('div', { className: 'grid grid-cols-4 gap-2' },
+                pads.map((_, idx) => {
+                  if (idx === editingPad) return null;
+                  return e('button', {
+                    key: idx,
+                    onClick: () => toggleMutePad(idx),
+                    className: 'py-2 rounded font-bold transition-all ' +
+                      (editParams.mutePads.includes(idx) ? 'bg-red-600 text-white' : 'bg-gray-700 text-gray-300')
+                  }, idx + 1);
+                })
+              )
             ),
 
             e('button', {
-              onClick: isRecordingTrack ? stopTrackRecording : startTrackRecording,
-              className: `w-full py-3 rounded-xl font-bold text-white shadow-lg transition-all active:scale-95 ${isRecordingTrack ? 'bg-red-600 animate-pulse' : 'bg-green-600 hover:bg-green-500'}`
-            }, isRecordingTrack ? '⏹️ Stop Track Recording' : '⏺️ Record Track')
+              onClick: applyEdit,
+              className: 'w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-xl transition-all active:scale-95'
+            }, 'Apply Changes')
           )
-        ),
+        )
+      ),
 
-        e('input', {
-          ref: fileInputRef,
-          type: 'file',
-          accept: 'audio/*',
-          onChange: handleFileUpload,
-          className: 'hidden'
-        }),
+      showExportModal && e('div', { className: 'fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-4 z-50' },
+        e('div', { className: 'bg-gray-800 rounded-xl p-6 max-w-md w-full' },
+          e('div', { className: 'flex justify-between items-center mb-4' },
+            e('h2', { className: 'text-xl font-bold text-white' }, 'Export Track'),
+            e('button', { onClick: () => setShowExportModal(false), className: 'text-white text-2xl' }, '×')
+          ),
 
-        editingPad !== null && e('div', { className: 'fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-4 z-50 overflow-y-auto' },
-          e('div', { className: 'bg-gray-800 rounded-xl p-6 max-w-2xl w-full my-8' },
-            e('div', { className: 'flex justify-between items-center mb-4' },
-              e('h2', { className: 'text-xl font-bold text-white' }, `Edit Pad ${editingPad + 1}`),
-              e('button', { onClick: () => { setEditingPad(null); setWaveformData(null); }, className: 'text-white text-2xl' }, '×')
+          e('div', { className: 'space-y-4' },
+            e('div', null,
+              e('label', { className: 'text-white text-sm block mb-2' }, 'Format'),
+              e('select', {
+                value: exportFormat,
+                onChange: (ev) => setExportFormat(ev.target.value),
+                className: 'w-full bg-gray-700 text-white p-3 rounded-lg'
+              },
+                e('option', { value: 'wav' }, 'WAV'),
+                e('option', { value: 'aiff' }, 'AIFF'),
+                e('option', { value: 'mp3' }, 'MP3 (as WAV)')
+              )
             ),
 
-            e('div', { className: 'space-y-4' },
-              e('div', { className: 'bg-gray-900 rounded-lg p-4' },
-                e('div', { className: 'flex justify-between items-center mb-2' },
-                  e('span', { className: 'text-white text-sm' }, 'Waveform (0dB line in red)'),
-                  e('div', { className: 'flex gap-2' },
-                    e('button', {
-                      onClick: () => setZoomLevel(Math.max(1, zoomLevel - 0.5)),
-                      className: 'bg-gray-700 p-2 rounded text-white text-xs'
-                    }, '🔍-'),
-                    e('button', {
-                      onClick: () => setZoomLevel(Math.min(5, zoomLevel + 0.5)),
-                      className: 'bg-gray-700 p-2 rounded text-white text-xs'
-                    }, '🔍+')
-                  )
-                ),
-                e('canvas', {
-                  ref: canvasRef,
-                  width: 600,
-                  height: 150,
-                  className: 'w-full bg-gray-950 rounded'
-                })
-              ),
+            e('div', null,
+              e('label', { className: 'text-white text-sm block mb-2' }, 'Sample Rate'),
+              e('select', {
+                value: exportSampleRate,
+                onChange: (ev) => setExportSampleRate(parseInt(ev.target.value)),
+                className: 'w-full bg-gray-700 text-white p-3 rounded-lg'
+              },
+                e('option', { value: '44100' }, '44.1 kHz'),
+                e('option', { value: '48000' }, '48 kHz')
+              )
+            ),
 
-              e('div', null,
-                e('label', { className: 'text-white text-sm block mb-2' }, `🔊 Volume: ${Math.round(editParams.volume * 100)}%`),
-                e('input', {
-                  type: 'range',
-                  min: '0',
-                  max: '2',
-                  step: '0.1',
-                  value: editParams.volume,
-                  onChange: (ev) => setEditParams({...editParams, volume: parseFloat(​​​​​​​​​​​​​​​​
-          e('div', null,
-            e('label', { className: 'text-white text-sm block mb-2' }, `✂️ Trim Start: ${Math.round(editParams.trimStart * 100)}%`),
-            e('input', {
-              type: 'range',
-              min: '0',
-              max: editParams.trimEnd,
-              step: '0.01',
-              value: editParams.trimStart,
-              onChange: (ev) => setEditParams({...editParams, trimStart: parseFloat(ev.target.value)}),
-              className: 'w-full'
-            })
-          ),
-
-          e('div', null,
-            e('label', { className: 'text-white text-sm block mb-2' }, `✂️ Trim End: ${Math.round(editParams.trimEnd * 100)}%`),
-            e('input', {
-              type: 'range',
-              min: editParams.trimStart,
-              max: '1',
-              step: '0.01',
-              value: editParams.trimEnd,
-              onChange: (ev) => setEditParams({...editParams, trimEnd: parseFloat(ev.target.value)}),
-              className: 'w-full'
-            })
-          ),
-
-          e('div', { className: 'flex items-center gap-2' },
-            e('input', {
-              type: 'checkbox',
-              id: 'normalize',
-              checked: editParams.normalize,
-              onChange: (ev) => setEditParams({...editParams, normalize: ev.target.checked}),
-              className: 'w-5 h-5'
-            }),
-            e('label', { htmlFor: 'normalize', className: 'text-white' }, 'Normalize Audio (-0.1 dB)')
-          ),
-
-          e('div', { className: 'flex items-center gap-2' },
-            e('input', {
-              type: 'checkbox',
-              id: 'loop',
-              checked: editParams.loop,
-              onChange: (ev) => setEditParams({...editParams, loop: ev.target.checked}),
-              className: 'w-5 h-5'
-            }),
-            e('label', { htmlFor: 'loop', className: 'text-white' }, 'Loop Sample')
-          ),
-
-          e('div', null,
-            e('label', { className: 'text-white text-sm block mb-2' }, 'Play Mode'),
-            e('select', {
-              value: editParams.playMode,
-              onChange: (ev) => setEditParams({...editParams, playMode: ev.target.value}),
-              className: 'w-full bg-gray-700 text-white p-3 rounded-lg'
-            },
-              e('option', { value: 'exclusive' }, 'Exclusive (stops last played pad)'),
-              e('option', { value: 'full' }, 'Full Shot (plays over last pad)')
-            )
-          ),
-
-          e('div', null,
-            e('label', { className: 'text-white text-sm block mb-2' }, 'Mute Other Pads When Playing'),
-            e('div', { className: 'grid grid-cols-4 gap-2' },
-              pads.map((_, idx) => {
-                if (idx === editingPad) return null;
-                return e('button', {
-                  key: idx,
-                  onClick: () => toggleMutePad(idx),
-                  className: `py-2 rounded font-bold transition-all ${editParams.mutePads.includes(idx) ? 'bg-red-600 text-white' : 'bg-gray-700 text-gray-300'}`
-                }, idx + 1);
-              })
-            )
-          ),
-
-          e('button', {
-            onClick: applyEdit,
-            className: 'w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-xl transition-all active:scale-95'
-          }, 'Apply Changes')
+            e('button', {
+              onClick: exportTrack,
+              className: 'w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-xl transition-all active:scale-95'
+            }, '💾 Export')
+          )
         )
       )
-    ),
+    );
+  }
 
-    showExportModal && e('div', { className: 'fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-4 z-50' },
-      e('div', { className: 'bg-gray-800 rounded-xl p-6 max-w-md w-full' },
-        e('div', { className: 'flex justify-between items-center mb-4' },
-          e('h2', { className: 'text-xl font-bold text-white' }, 'Export Track'),
-          e('button', { onClick: () => setShowExportModal(false), className: 'text-white text-2xl' }, '×')
-        ),
-
-        e('div', { className: 'space-y-4' },
-          e('div', null,
-            e('label', { className: 'text-white text-sm block mb-2' }, 'Format'),
-            e('select', {
-              value: exportFormat,
-              onChange: (ev) => setExportFormat(ev.target.value),
-              className: 'w-full bg-gray-700 text-white p-3 rounded-lg'
-            },
-              e('option', { value: 'wav' }, 'WAV'),
-              e('option', { value: 'aiff' }, 'AIFF'),
-              e('option', { value: 'mp3' }, 'MP3 (as WAV)')
-            )
-          ),
-
-          e('div', null,
-            e('label', { className: 'text-white text-sm block mb-2' }, 'Sample Rate'),
-            e('select', {
-              value: exportSampleRate,
-              onChange: (ev) => setExportSampleRate(parseInt(ev.target.value)),
-              className: 'w-full bg-gray-700 text-white p-3 rounded-lg'
-            },
-              e('option', { value: '44100' }, '44.1 kHz'),
-              e('option', { value: '48000' }, '48 kHz')
-            )
-          ),
-
-          e('button', {
-            onClick: exportTrack,
-            className: 'w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-xl transition-all active:scale-95'
-          }, '💾 Export')
-        )
-      )
-    )
-  );
-}
-
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(e(MobileSampler));
+  const root = ReactDOM.createRoot(document.getElementById('root'));
+  root.render(e(MobileSampler));
+})();
+</script>
+</body>
+</html>
