@@ -4,17 +4,23 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <title>Audio Sampler</title>
+  <title>Audio Sampler (Low Latency + Project Save/Load)</title>
 
+  <!-- React UMD -->
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+  <!-- Tailwind CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
 
+  <!-- Lightweight MP3 encoder (pure JS) -->
+  <script src="https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js"></script>
+
   <style>
-    /* Helps avoid iOS zoom-jank on inputs */
-    input, select, button { font-size: 16px; }
+    input, select, button { font-size: 16px; } /* avoid iOS zoom */
   </style>
 </head>
+
 <body class="bg-gray-900">
   <div id="root">Loading...</div>
 
@@ -22,28 +28,57 @@
     (function () {
       'use strict';
 
-      // Show errors on-screen instead of silently hanging on "Loading..."
+      // Error overlay (prevents silent "Loading..." failures)
       const showFatal = (msg) => {
         const root = document.getElementById('root');
         root.innerHTML =
           '<div style="padding:16px;font-family:ui-sans-serif,system-ui;color:#fff">' +
           '<div style="font-weight:700;margin-bottom:8px">App error</div>' +
-          '<pre style="white-space:pre-wrap;background:#111827;padding:12px;border-radius:12px;line-height:1.3">' +
+          '<pre style="white-space:pre-wrap;background:#111827;padding:12px;border-radius:12px;line-height:1.35">' +
           String(msg) +
           '</pre>' +
           '</div>';
       };
-
       window.addEventListener('error', (e) => showFatal(e.error ? e.error.stack : e.message));
       window.addEventListener('unhandledrejection', (e) => showFatal(e.reason ? (e.reason.stack || e.reason) : 'Unhandled rejection'));
 
       const { createElement: e, useState, useRef, useEffect } = React;
 
+      function clamp01(x) { return Math.max(0, Math.min(1, x)); }
+
+      async function blobToBase64DataUrl(blob) {
+        // Returns "data:<mime>;base64,....."
+        return await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(reader.error || new Error('FileReader error'));
+          reader.readAsDataURL(blob);
+        });
+      }
+
+      function dataUrlToBlob(dataUrl) {
+        // dataUrl: "data:mime/type;base64,AAAA..."
+        const comma = dataUrl.indexOf(',');
+        const meta = dataUrl.slice(0, comma);
+        const b64 = dataUrl.slice(comma + 1);
+        const mimeMatch = meta.match(/data:(.*?);base64/i);
+        const mime = mimeMatch ? mimeMatch[1] : 'application/octet-stream';
+
+        const binary = atob(b64);
+        const len = binary.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+        return new Blob([bytes], { type: mime });
+      }
+
       function MobileSampler() {
         const [pads, setPads] = useState(Array(16).fill(null));
         const [selectedPad, setSelectedPad] = useState(null);
         const [isRecording, setIsRecording] = useState(false);
+
         const [playingPads, setPlayingPads] = useState(new Set());
+        const [mutedPads, setMutedPads] = useState(new Set());
+
         const [editingPad, setEditingPad] = useState(null);
         const [editParams, setEditParams] = useState({
           volume: 1,
@@ -54,28 +89,36 @@
           playMode: 'exclusive',
           mutePads: []
         });
-        const [mutedPads, setMutedPads] = useState(new Set());
-        const [isRecordingTrack, setIsRecordingTrack] = useState(false);
-        const [showExportModal, setShowExportModal] = useState(false);
-        const [exportFormat, setExportFormat] = useState('wav');
-        const [exportSampleRate, setExportSampleRate] = useState(48000);
+
         const [waveformData, setWaveformData] = useState(null);
         const [zoomLevel, setZoomLevel] = useState(1);
+
+        const [showExportModal, setShowExportModal] = useState(false);
+        const [exportSelection, setExportSelection] = useState({
+          mp3: true,
+          aiff: true,
+          wav: true,
+          m4a: false // suggested; not in lightweight build
+        });
+        const [exportSampleRate, setExportSampleRate] = useState(48000);
+
         const [lastPlayedPad, setLastPlayedPad] = useState(null);
 
-        const mediaRecorder = useRef(null);
-        const audioChunks = useRef([]);
         const audioContextRef = useRef(null);
-        const audioElements = useRef({});
-        const trackRecorder = useRef(null);
-        const trackStream = useRef(null);
+        const mediaRecorderRef = useRef(null);
+        const recordStreamRef = useRef(null);
+        const audioChunksRef = useRef([]);
+
         const fileInputRef = useRef(null);
+        const loadProjectInputRef = useRef(null);
         const canvasRef = useRef(null);
+
+        const activeVoicesRef = useRef({});
+        const MAX_VOICES_PER_PAD = 10;
 
         useEffect(() => {
           const AC = window.AudioContext || window.webkitAudioContext;
           if (!AC) throw new Error('AudioContext not supported in this browser.');
-
           audioContextRef.current = new AC();
 
           const resume = async () => {
@@ -86,7 +129,6 @@
             } catch (_) {}
           };
 
-          // iOS often needs a user gesture to start audio
           document.addEventListener('touchstart', resume, { passive: true, once: true });
           document.addEventListener('click', resume, { passive: true, once: true });
 
@@ -94,6 +136,250 @@
             try { audioContextRef.current && audioContextRef.current.close(); } catch (_) {}
           };
         }, []);
+
+        const decodeToAudioBuffer = async (arrayBuffer) => {
+          const ctx = audioContextRef.current;
+          if (!ctx) throw new Error('AudioContext not ready');
+          if (ctx.state === 'suspended') await ctx.resume();
+          return await ctx.decodeAudioData(arrayBuffer.slice(0));
+        };
+
+        const chooseRecorderMimeType = () => {
+          const candidates = [
+            'audio/mp4;codecs=mp4a.40.2',
+            'audio/mp4',
+            'audio/webm;codecs=opus',
+            'audio/webm'
+          ];
+          if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return '';
+          for (const t of candidates) if (MediaRecorder.isTypeSupported(t)) return t;
+          return '';
+        };
+
+        const startRecording = async () => {
+          if (selectedPad === null) { alert('Select a pad first'); return; }
+          if (!navigator.mediaDevices?.getUserMedia) { alert('getUserMedia not supported'); return; }
+          if (!window.MediaRecorder) { alert('MediaRecorder not supported on this Safari/iOS version.'); return; }
+
+          try {
+            const ctx = audioContextRef.current;
+            if (ctx && ctx.state === 'suspended') await ctx.resume();
+
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            recordStreamRef.current = stream;
+
+            const mimeType = chooseRecorderMimeType();
+            const opts = mimeType ? { mimeType } : undefined;
+
+            mediaRecorderRef.current = new MediaRecorder(stream, opts);
+            audioChunksRef.current = [];
+
+            mediaRecorderRef.current.ondataavailable = (ev) => {
+              if (ev.data && ev.data.size > 0) audioChunksRef.current.push(ev.data);
+            };
+
+            mediaRecorderRef.current.onstop = async () => {
+              try {
+                const mime = mediaRecorderRef.current.mimeType || 'audio/webm';
+                const blob = new Blob(audioChunksRef.current, { type: mime });
+                const arrayBuffer = await blob.arrayBuffer();
+                const audioBuffer = await decodeToAudioBuffer(arrayBuffer);
+
+                const newPads = [...pads];
+                newPads[selectedPad] = {
+                  audioBuffer,
+                  originalBlob: blob,
+                  originalName: 'recording',
+                  volume: 1,
+                  trimStart: 0,
+                  trimEnd: 1,
+                  normalize: false,
+                  loop: false,
+                  playMode: 'exclusive',
+                  mutePads: []
+                };
+                setPads(newPads);
+              } catch (err) {
+                alert('Recorded audio could not be decoded on this device.\n\n' + (err?.message || err));
+              } finally {
+                if (recordStreamRef.current) {
+                  recordStreamRef.current.getTracks().forEach((t) => t.stop());
+                  recordStreamRef.current = null;
+                }
+              }
+            };
+
+            mediaRecorderRef.current.start();
+            setIsRecording(true);
+          } catch (err) {
+            alert('Microphone access failed: ' + (err?.message || err));
+          }
+        };
+
+        const stopRecording = () => {
+          if (mediaRecorderRef.current && isRecording) {
+            try { mediaRecorderRef.current.stop(); } catch (_) {}
+            setIsRecording(false);
+          }
+        };
+
+        const handleFileUpload = async (ev) => {
+          if (selectedPad === null) { alert('Select a pad first'); return; }
+          const file = ev.target.files?.[0];
+          if (!file) return;
+
+          try {
+            const arrayBuffer = await file.arrayBuffer();
+            const audioBuffer = await decodeToAudioBuffer(arrayBuffer);
+
+            const newPads = [...pads];
+            newPads[selectedPad] = {
+              audioBuffer,
+              originalBlob: file,
+              originalName: file.name || 'upload',
+              volume: 1,
+              trimStart: 0,
+              trimEnd: 1,
+              normalize: false,
+              loop: false,
+              playMode: 'exclusive',
+              mutePads: []
+            };
+            setPads(newPads);
+          } catch (err) {
+            alert('This audio file could not be decoded.\n\n' + (err?.message || err));
+          } finally {
+            ev.target.value = '';
+          }
+        };
+
+        const stopVoicesForPad = (padIdx) => {
+          const list = activeVoicesRef.current[padIdx] || [];
+          list.forEach(v => { try { v.source.stop(); } catch (_) {} });
+          activeVoicesRef.current[padIdx] = [];
+          setPlayingPads(prev => {
+            const s = new Set(prev);
+            s.delete(padIdx);
+            return s;
+          });
+        };
+
+        const playPad = async (index) => {
+          const pad = pads[index];
+          if (!pad || mutedPads.has(index)) return;
+
+          const ctx = audioContextRef.current;
+          if (!ctx) return;
+          if (ctx.state === 'suspended') await ctx.resume();
+
+          if (pad.playMode === 'exclusive' && lastPlayedPad !== null && lastPlayedPad !== index) {
+            stopVoicesForPad(lastPlayedPad);
+          }
+
+          (pad.mutePads || []).forEach((p) => stopVoicesForPad(p));
+
+          const buffer = pad.audioBuffer;
+          if (!buffer) return;
+
+          const startFrac = clamp01(pad.trimStart ?? 0);
+          const endFrac = clamp01(pad.trimEnd ?? 1);
+          const safeEndFrac = Math.max(endFrac, startFrac + 0.0001);
+
+          const offsetSec = startFrac * buffer.duration;
+          const durSec = (safeEndFrac - startFrac) * buffer.duration;
+
+          const source = ctx.createBufferSource();
+          source.buffer = buffer;
+
+          const gain = ctx.createGain();
+          const now = ctx.currentTime;
+
+          const vol = (pad.volume ?? 1);
+          gain.gain.setValueAtTime(0, now);
+          gain.gain.linearRampToValueAtTime(vol, now + 0.002);
+
+          source.connect(gain);
+          gain.connect(ctx.destination);
+
+          const list = activeVoicesRef.current[index] || [];
+          list.push({ source, gain });
+          while (list.length > MAX_VOICES_PER_PAD) {
+            const old = list.shift();
+            try { old.source.stop(); } catch (_) {}
+          }
+          activeVoicesRef.current[index] = list;
+
+          setPlayingPads(prev => new Set(prev).add(index));
+          setLastPlayedPad(index);
+
+          source.onended = () => {
+            const cur = activeVoicesRef.current[index] || [];
+            activeVoicesRef.current[index] = cur.filter(v => v.source !== source);
+            if ((activeVoicesRef.current[index] || []).length === 0) {
+              setPlayingPads(prev => {
+                const s = new Set(prev);
+                s.delete(index);
+                return s;
+              });
+            }
+          };
+
+          if (pad.loop) {
+            source.loop = true;
+            source.loopStart = offsetSec;
+            source.loopEnd = offsetSec + durSec;
+            source.start(0, offsetSec);
+          } else {
+            source.loop = false;
+            source.start(0, offsetSec, durSec);
+          }
+        };
+
+        const clearPad = (index) => {
+          stopVoicesForPad(index);
+          const newPads = [...pads];
+          newPads[index] = null;
+          setPads(newPads);
+          if (selectedPad === index) setSelectedPad(null);
+          if (editingPad === index) setEditingPad(null);
+        };
+
+        const toggleMute = (index) => {
+          setMutedPads(prev => {
+            const s = new Set(prev);
+            if (s.has(index)) s.delete(index);
+            else s.add(index);
+            return s;
+          });
+        };
+
+        const toggleMutePadInEditor = (padIndex) => {
+          setEditParams(prev => {
+            const list = [...(prev.mutePads || [])];
+            const i = list.indexOf(padIndex);
+            if (i > -1) list.splice(i, 1);
+            else list.push(padIndex);
+            return { ...prev, mutePads: list };
+          });
+        };
+
+        const generateWaveformData = async (audioBuffer) => {
+          const channel = audioBuffer.getChannelData(0);
+          const samples = 1000;
+          const blockSize = Math.max(1, Math.floor(channel.length / samples));
+          const out = new Array(samples);
+
+          for (let i = 0; i < samples; i++) {
+            const start = i * blockSize;
+            let peak = 0;
+            for (let j = 0; j < blockSize && (start + j) < channel.length; j++) {
+              const v = Math.abs(channel[start + j]);
+              if (v > peak) peak = v;
+            }
+            out[i] = peak;
+          }
+          return out;
+        };
 
         const drawWaveform = () => {
           if (!canvasRef.current || !waveformData) return;
@@ -103,10 +389,9 @@
           const width = canvas.width;
           const height = canvas.height;
 
-          ctx.fillStyle = '#1f2937';
+          ctx.fillStyle = '#0b1220';
           ctx.fillRect(0, 0, width, height);
 
-          // 0dB line
           ctx.strokeStyle = '#ef4444';
           ctx.lineWidth = 1;
           ctx.beginPath();
@@ -114,178 +399,139 @@
           ctx.lineTo(width, height / 2);
           ctx.stroke();
 
-          const startIdx = Math.floor((waveformData.length * editParams.trimStart) / zoomLevel);
-          const endIdx = Math.floor((waveformData.length * editParams.trimEnd) / zoomLevel);
-          const visibleData = waveformData.slice(startIdx, Math.max(startIdx + 1, endIdx));
+          const skip = Math.max(1, Math.floor(zoomLevel));
+          const data = [];
+          for (let i = 0; i < waveformData.length; i += skip) data.push(waveformData[i]);
 
           ctx.strokeStyle = '#3b82f6';
           ctx.lineWidth = 2;
           ctx.beginPath();
-
-          const step = width / visibleData.length;
-          for (let i = 0; i < visibleData.length; i++) {
+          const step = width / (data.length - 1);
+          for (let i = 0; i < data.length; i++) {
             const x = i * step;
-            const y = height / 2 - (visibleData[i] * height / 2);
+            const y = height / 2 - (data[i] * (height / 2));
             if (i === 0) ctx.moveTo(x, y);
             else ctx.lineTo(x, y);
           }
           ctx.stroke();
 
-          // Trim shading
           const trimStartX = editParams.trimStart * width;
           const trimEndX = editParams.trimEnd * width;
 
-          ctx.fillStyle = 'rgba(239, 68, 68, 0.30)';
+          ctx.fillStyle = 'rgba(239, 68, 68, 0.25)';
           ctx.fillRect(0, 0, trimStartX, height);
           ctx.fillRect(trimEndX, 0, width - trimEndX, height);
+
+          ctx.fillStyle = 'rgba(34, 197, 94, 0.07)';
+          ctx.fillRect(trimStartX, 0, Math.max(0, trimEndX - trimStartX), height);
+
+          ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(trimStartX, 0); ctx.lineTo(trimStartX, height);
+          ctx.moveTo(trimEndX, 0); ctx.lineTo(trimEndX, height);
+          ctx.stroke();
         };
 
         useEffect(() => {
           if (editingPad !== null && waveformData && canvasRef.current) {
             drawWaveform();
           }
-          // redraw when relevant state changes
         }, [editingPad, waveformData, editParams.trimStart, editParams.trimEnd, zoomLevel]);
 
-        const startRecording = async () => {
-          if (selectedPad === null) {
-            alert('Please select a pad first');
-            return;
-          }
-          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            alert('getUserMedia not supported in this browser');
-            return;
-          }
-          if (!window.MediaRecorder) {
-            alert('MediaRecorder not supported on this Safari/iOS version.');
-            return;
-          }
+        const openEditor = async (index) => {
+          const pad = pads[index];
+          if (!pad?.audioBuffer) return;
 
-          try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            mediaRecorder.current = new MediaRecorder(stream);
-            audioChunks.current = [];
+          setEditingPad(index);
+          setEditParams({
+            volume: pad.volume ?? 1,
+            trimStart: pad.trimStart ?? 0,
+            trimEnd: pad.trimEnd ?? 1,
+            normalize: !!pad.normalize,
+            loop: !!pad.loop,
+            playMode: pad.playMode || 'exclusive',
+            mutePads: pad.mutePads || []
+          });
 
-            mediaRecorder.current.ondataavailable = (ev) => audioChunks.current.push(ev.data);
-
-            mediaRecorder.current.onstop = async () => {
-              // NOTE: Safari may not like audio/webm; but this is what your original code used.
-              // If decode fails later, you’ll now see the error overlay.
-              const blob = new Blob(audioChunks.current, { type: 'audio/webm' });
-              const arrayBuffer = await blob.arrayBuffer();
-
-              const newPads = [...pads];
-              newPads[selectedPad] = {
-                original: arrayBuffer,
-                processed: arrayBuffer,
-                volume: 1,
-                trimStart: 0,
-                trimEnd: 1,
-                normalize: false,
-                loop: false,
-                playMode: 'exclusive',
-                mutePads: []
-              };
-              setPads(newPads);
-
-              stream.getTracks().forEach((t) => t.stop());
-            };
-
-            mediaRecorder.current.start();
-            setIsRecording(true);
-          } catch (err) {
-            alert('Microphone access denied: ' + (err && err.message ? err.message : err));
-          }
+          const data = await generateWaveformData(pad.audioBuffer);
+          setWaveformData(data);
+          setZoomLevel(1);
         };
 
-        const stopRecording = () => {
-          if (mediaRecorder.current && isRecording) {
-            mediaRecorder.current.stop();
-            setIsRecording(false);
-          }
-        };
+        const applyEdit = () => {
+          if (editingPad === null) return;
 
-        const handleFileUpload = async (ev) => {
-          if (selectedPad === null) {
-            alert('Please select a pad first');
-            return;
-          }
-          const file = ev.target.files && ev.target.files[0];
-          if (!file) return;
-
-          const arrayBuffer = await file.arrayBuffer();
           const newPads = [...pads];
-          newPads[selectedPad] = {
-            original: arrayBuffer,
-            processed: arrayBuffer,
-            volume: 1,
-            trimStart: 0,
-            trimEnd: 1,
-            normalize: false,
-            loop: false,
-            playMode: 'exclusive',
-            mutePads: []
-          };
+          newPads[editingPad] = { ...newPads[editingPad], ...editParams };
           setPads(newPads);
 
-          ev.target.value = '';
+          setEditingPad(null);
+          setWaveformData(null);
         };
 
-        const generateWaveformData = async (arrayBuffer) => {
-          const audioBuffer = await audioContextRef.current.decodeAudioData(arrayBuffer.slice(0));
-          const rawData = audioBuffer.getChannelData(0);
-          const samples = 1000;
-          const blockSize = Math.max(1, Math.floor(rawData.length / samples));
-          const filteredData = [];
+        // ---- Export (same as before; lightweight) ----
+        const renderPadToAudioBuffer = async (padIndex, targetSampleRate) => {
+          const pad = pads[padIndex];
+          if (!pad?.audioBuffer) throw new Error('No pad audio');
 
-          for (let i = 0; i < samples; i++) {
-            const blockStart = blockSize * i;
-            let sum = 0;
-            for (let j = 0; j < blockSize && (blockStart + j) < rawData.length; j++) {
-              sum += Math.abs(rawData[blockStart + j]);
+          const src = pad.audioBuffer;
+
+          const startFrac = clamp01(pad.trimStart ?? 0);
+          const endFrac = clamp01(pad.trimEnd ?? 1);
+          const safeEndFrac = Math.max(endFrac, startFrac + 0.0001);
+
+          const offsetSec = startFrac * src.duration;
+          const durSec = (safeEndFrac - startFrac) * src.duration;
+
+          const numCh = src.numberOfChannels;
+          const length = Math.max(1, Math.floor(durSec * targetSampleRate));
+
+          const off = new OfflineAudioContext(numCh, length, targetSampleRate);
+
+          const source = off.createBufferSource();
+          source.buffer = src;
+
+          const gain = off.createGain();
+          const vol = pad.volume ?? 1;
+
+          let normGain = 1;
+          if (pad.normalize) {
+            let peak = 0;
+            const startSample = Math.floor(offsetSec * src.sampleRate);
+            const endSample = Math.floor((offsetSec + durSec) * src.sampleRate);
+
+            for (let ch = 0; ch < numCh; ch++) {
+              const data = src.getChannelData(ch);
+              for (let i = startSample; i < endSample && i < data.length; i++) {
+                const v = Math.abs(data[i]);
+                if (v > peak) peak = v;
+              }
             }
-            filteredData.push(sum / blockSize);
+            const targetPeak = 0.989;
+            if (peak > 0) normGain = targetPeak / peak;
           }
 
-          return filteredData;
+          gain.gain.value = vol * normGain;
+
+          source.connect(gain);
+          gain.connect(off.destination);
+
+          source.start(0, offsetSec, durSec);
+          return await off.startRendering();
         };
 
-        const audioBufferToWav = (buffer, sampleRate) => {
-          const targetRate = sampleRate || buffer.sampleRate;
+        const audioBufferToWavBlob = (buffer) => {
           const numChannels = buffer.numberOfChannels;
-          const format = 1;
+          const sampleRate = buffer.sampleRate;
           const bitDepth = 16;
 
           const bytesPerSample = bitDepth / 8;
           const blockAlign = numChannels * bytesPerSample;
 
-          let data;
-          if (targetRate !== buffer.sampleRate) {
-            const ratio = targetRate / buffer.sampleRate;
-            const newLength = Math.floor(buffer.length * ratio);
-            data = new Float32Array(newLength * numChannels);
+          const length = buffer.length;
+          const dataLength = length * numChannels * bytesPerSample;
 
-            for (let ch = 0; ch < numChannels; ch++) {
-              const channelData = buffer.getChannelData(ch);
-              for (let i = 0; i < newLength; i++) {
-                const srcIndex = i / ratio;
-                const a = Math.floor(srcIndex);
-                const b = Math.min(a + 1, buffer.length - 1);
-                const t = srcIndex - a;
-                data[i * numChannels + ch] = channelData[a] * (1 - t) + channelData[b] * t;
-              }
-            }
-          } else {
-            data = new Float32Array(buffer.length * numChannels);
-            for (let ch = 0; ch < numChannels; ch++) {
-              const channelData = buffer.getChannelData(ch);
-              for (let i = 0; i < buffer.length; i++) {
-                data[i * numChannels + ch] = channelData[i];
-              }
-            }
-          }
-
-          const dataLength = data.length * bytesPerSample;
           const arrayBuffer = new ArrayBuffer(44 + dataLength);
           const view = new DataView(arrayBuffer);
 
@@ -298,264 +544,316 @@
           writeString(8, 'WAVE');
           writeString(12, 'fmt ');
           view.setUint32(16, 16, true);
-          view.setUint16(20, format, true);
+          view.setUint16(20, 1, true);
           view.setUint16(22, numChannels, true);
-          view.setUint32(24, targetRate, true);
-          view.setUint32(28, targetRate * blockAlign, true);
+          view.setUint32(24, sampleRate, true);
+          view.setUint32(28, sampleRate * blockAlign, true);
           view.setUint16(32, blockAlign, true);
           view.setUint16(34, bitDepth, true);
           writeString(36, 'data');
           view.setUint32(40, dataLength, true);
 
           let offset = 44;
-          for (let i = 0; i < data.length; i++) {
-            const sample = Math.max(-1, Math.min(1, data[i]));
-            view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-            offset += 2;
+          for (let i = 0; i < length; i++) {
+            for (let ch = 0; ch < numChannels; ch++) {
+              const sample = buffer.getChannelData(ch)[i];
+              const s = Math.max(-1, Math.min(1, sample));
+              view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+              offset += 2;
+            }
           }
 
           return new Blob([arrayBuffer], { type: 'audio/wav' });
         };
 
-        const processAudio = async (padData, params) => {
-          const audioBuffer = await audioContextRef.current.decodeAudioData(padData.original.slice(0));
-          const { trimStart, trimEnd, volume, normalize } = params;
+        const audioBufferToAiffBlob = (buffer) => {
+          const numChannels = buffer.numberOfChannels;
+          const sampleRate = buffer.sampleRate;
+          const bitDepth = 16;
+          const bytesPerSample = bitDepth / 8;
 
-          const startSample = Math.floor(trimStart * audioBuffer.length);
-          const endSample = Math.floor(trimEnd * audioBuffer.length);
-          const newLength = Math.max(1, endSample - startSample);
+          const numFrames = buffer.length;
+          const ssndSize = numFrames * numChannels * bytesPerSample + 8;
+          const commSize = 18;
+          const formSize = 4 + 8 + commSize + 8 + ssndSize;
 
-          const processedBuffer = audioContextRef.current.createBuffer(
-            audioBuffer.numberOfChannels,
-            newLength,
-            audioBuffer.sampleRate
-          );
+          const arrayBuffer = new ArrayBuffer(8 + formSize);
+          const view = new DataView(arrayBuffer);
 
-          for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
-            const inputData = audioBuffer.getChannelData(ch);
-            const outputData = processedBuffer.getChannelData(ch);
-
-            let max = 0;
-            for (let i = startSample; i < endSample; i++) {
-              max = Math.max(max, Math.abs(inputData[i] || 0));
-            }
-
-            const targetPeak = 0.989;
-            const normFactor = normalize && max > 0 ? targetPeak / max : 1;
-
-            for (let i = 0; i < newLength; i++) {
-              outputData[i] = (inputData[startSample + i] || 0) * normFactor * volume;
-            }
-          }
-
-          const offlineContext = new OfflineAudioContext(
-            processedBuffer.numberOfChannels,
-            processedBuffer.length,
-            processedBuffer.sampleRate
-          );
-
-          const source = offlineContext.createBufferSource();
-          source.buffer = processedBuffer;
-          source.connect(offlineContext.destination);
-          source.start();
-
-          const rendered = await offlineContext.startRendering();
-          const wavBlob = audioBufferToWav(rendered);
-          return await wavBlob.arrayBuffer();
-        };
-
-        const playPad = async (index) => {
-          if (!pads[index] || mutedPads.has(index)) return;
-
-          const padData = pads[index];
-
-          if (padData.playMode === 'exclusive' && lastPlayedPad !== null && audioElements.current[lastPlayedPad]) {
-            audioElements.current[lastPlayedPad].pause();
-            audioElements.current[lastPlayedPad].currentTime = 0;
-            setPlayingPads((prev) => {
-              const s = new Set(prev);
-              s.delete(lastPlayedPad);
-              return s;
-            });
-          }
-
-          (padData.mutePads || []).forEach((padIdx) => {
-            if (audioElements.current[padIdx]) {
-              audioElements.current[padIdx].pause();
-              audioElements.current[padIdx].currentTime = 0;
-              setPlayingPads((prev) => {
-                const s = new Set(prev);
-                s.delete(padIdx);
-                return s;
-              });
-            }
-          });
-
-          const audioData = padData.processed || padData.original;
-          const blob = new Blob([audioData], { type: 'audio/wav' });
-          const url = URL.createObjectURL(blob);
-
-          const audio = new Audio(url);
-          audio.loop = !!padData.loop;
-          audioElements.current[index] = audio;
-
-          setPlayingPads((prev) => new Set(prev).add(index));
-          setLastPlayedPad(index);
-
-          audio.onended = () => {
-            if (!audio.loop) {
-              setPlayingPads((prev) => {
-                const s = new Set(prev);
-                s.delete(index);
-                return s;
-              });
-              URL.revokeObjectURL(url);
-            }
+          const writeString = (offset, string) => {
+            for (let i = 0; i < string.length; i++) view.setUint8(offset + i, string.charCodeAt(i));
           };
 
-          await audio.play();
-        };
+          const writeExtendedSampleRate = (offset, rate) => {
+            // Pragmatic encoding; good enough for common decoders
+            const exponent = 16398;
+            view.setUint16(offset, exponent, false);
+            const hi = Math.floor(rate) << 16;
+            view.setUint32(offset + 2, hi >>> 0, false);
+            view.setUint32(offset + 6, 0, false);
+          };
 
-        const clearPad = (index) => {
-          const newPads = [...pads];
-          newPads[index] = null;
-          setPads(newPads);
-          if (selectedPad === index) setSelectedPad(null);
-          if (editingPad === index) setEditingPad(null);
-        };
+          writeString(0, 'FORM');
+          view.setUint32(4, formSize, false);
+          writeString(8, 'AIFF');
 
-        const openEditor = async (index) => {
-          if (!pads[index]) return;
-          setEditingPad(index);
-          setEditParams({
-            volume: pads[index].volume || 1,
-            trimStart: pads[index].trimStart || 0,
-            trimEnd: pads[index].trimEnd || 1,
-            normalize: !!pads[index].normalize,
-            loop: !!pads[index].loop,
-            playMode: pads[index].playMode || 'exclusive',
-            mutePads: pads[index].mutePads || []
-          });
+          writeString(12, 'COMM');
+          view.setUint32(16, commSize, false);
+          view.setUint16(20, numChannels, false);
+          view.setUint32(22, numFrames, false);
+          view.setUint16(26, bitDepth, false);
+          writeExtendedSampleRate(28, sampleRate);
 
-          const waveData = await generateWaveformData(pads[index].original);
-          setWaveformData(waveData);
-          setZoomLevel(1);
-        };
+          writeString(38, 'SSND');
+          view.setUint32(42, ssndSize, false);
+          view.setUint32(46, 0, false);
+          view.setUint32(50, 0, false);
 
-        const applyEdit = async () => {
-          if (editingPad === null) return;
-
-          const padData = pads[editingPad];
-          const processed = await processAudio(padData, editParams);
-
-          const newPads = [...pads];
-          newPads[editingPad] = { ...padData, processed, ...editParams };
-          setPads(newPads);
-          setEditingPad(null);
-          setWaveformData(null);
-        };
-
-        const toggleMute = (index) => {
-          setMutedPads((prev) => {
-            const s = new Set(prev);
-            if (s.has(index)) s.delete(index);
-            else s.add(index);
-            return s;
-          });
-        };
-
-        const toggleMutePad = (padIndex) => {
-          setEditParams((prev) => {
-            const mutePads = [...prev.mutePads];
-            const idx = mutePads.indexOf(padIndex);
-            if (idx > -1) mutePads.splice(idx, 1);
-            else mutePads.push(padIndex);
-            return { ...prev, mutePads };
-          });
-        };
-
-        // Track recording: your original code doesn't actually route pad audio into the recorder.
-        // Leaving your original approach, but now it won't break render.
-        const startTrackRecording = async () => {
-          if (!window.MediaRecorder) {
-            alert('MediaRecorder not supported on this Safari/iOS version.');
-            return;
-          }
-          try {
-            const destNode = audioContextRef.current.createMediaStreamDestination();
-            trackStream.current = destNode.stream;
-
-            trackRecorder.current = new MediaRecorder(trackStream.current);
-            audioChunks.current = [];
-
-            trackRecorder.current.ondataavailable = (ev) => audioChunks.current.push(ev.data);
-            trackRecorder.current.onstop = () => setShowExportModal(true);
-
-            trackRecorder.current.start();
-            setIsRecordingTrack(true);
-          } catch (err) {
-            alert('Failed to start track recording: ' + (err && err.message ? err.message : err));
-          }
-        };
-
-        const stopTrackRecording = () => {
-          if (trackRecorder.current && isRecordingTrack) {
-            trackRecorder.current.stop();
-            setIsRecordingTrack(false);
-          }
-        };
-
-        const exportTrack = async () => {
-          const blob = new Blob(audioChunks.current, { type: 'audio/webm' });
-          const arrayBuffer = await blob.arrayBuffer();
-          const audioBuffer = await audioContextRef.current.decodeAudioData(arrayBuffer);
-
-          let finalBlob;
-          let filename;
-
-          if (exportFormat === 'wav') {
-            finalBlob = audioBufferToWav(audioBuffer, exportSampleRate);
-            filename = 'beat_' + Date.now() + '.wav';
-          } else if (exportFormat === 'mp3') {
-            finalBlob = audioBufferToWav(audioBuffer, exportSampleRate);
-            filename = 'beat_' + Date.now() + '.wav';
-            alert('Note: Direct MP3 encoding requires additional libraries. Exporting as WAV instead.');
-          } else {
-            finalBlob = audioBufferToWav(audioBuffer, exportSampleRate);
-            filename = 'beat_' + Date.now() + '.wav';
+          let o = 54;
+          for (let i = 0; i < numFrames; i++) {
+            for (let ch = 0; ch < numChannels; ch++) {
+              const sample = buffer.getChannelData(ch)[i];
+              const s = Math.max(-1, Math.min(1, sample));
+              view.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7fff, false);
+              o += 2;
+            }
           }
 
-          const url = URL.createObjectURL(finalBlob);
+          return new Blob([arrayBuffer], { type: 'audio/aiff' });
+        };
+
+        const audioBufferToMp3Blob = (buffer) => {
+          const numChannels = buffer.numberOfChannels;
+          const sampleRate = buffer.sampleRate;
+
+          const left = buffer.getChannelData(0);
+          const right = numChannels > 1 ? buffer.getChannelData(1) : null;
+
+          const toInt16 = (f) => {
+            const s = Math.max(-1, Math.min(1, f));
+            return s < 0 ? (s * 0x8000) : (s * 0x7fff);
+          };
+
+          const mp3Encoder = new lamejs.Mp3Encoder(numChannels, sampleRate, 192);
+          const blockSize = 1152;
+          const mp3Data = [];
+
+          for (let i = 0; i < left.length; i += blockSize) {
+            const size = Math.min(blockSize, left.length - i);
+            const l = new Int16Array(size);
+            const r = right ? new Int16Array(size) : null;
+
+            for (let j = 0; j < size; j++) {
+              l[j] = toInt16(left[i + j]);
+              if (r) r[j] = toInt16(right[i + j]);
+            }
+
+            const mp3buf = (numChannels === 2) ? mp3Encoder.encodeBuffer(l, r) : mp3Encoder.encodeBuffer(l);
+            if (mp3buf?.length) mp3Data.push(mp3buf);
+          }
+
+          const end = mp3Encoder.flush();
+          if (end?.length) mp3Data.push(end);
+
+          return new Blob(mp3Data, { type: 'audio/mpeg' });
+        };
+
+        const downloadBlob = (blob, filename) => {
+          const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = url;
           a.download = filename;
           a.click();
-          URL.revokeObjectURL(url);
-
-          setShowExportModal(false);
-          audioChunks.current = [];
+          setTimeout(() => URL.revokeObjectURL(url), 800);
         };
 
-        return e('div', { className: 'min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 p-4 pb-48' },
-          e('h1', { className: 'text-3xl font-bold text-white text-center mb-6' }, 'Audio Sampler'),
+        const openExport = () => {
+          if (selectedPad === null || !pads[selectedPad]) {
+            alert('Select a loaded pad to export.');
+            return;
+          }
+          setShowExportModal(true);
+        };
 
-          isRecordingTrack && e('div', { className: 'bg-red-600 text-white text-center py-2 rounded-lg mb-4 animate-pulse font-bold' }, '🔴 RECORDING TRACK'),
+        const exportSelected = async () => {
+          try {
+            if (selectedPad === null || !pads[selectedPad]) {
+              alert('Select a loaded pad to export.');
+              return;
+            }
+            if (exportSelection.m4a) {
+              alert('M4A (AAC) export is suggested, but not included in the lightweight build.\n\nAdd later with FFmpeg/WASM.');
+              return;
+            }
+
+            const rendered = await renderPadToAudioBuffer(selectedPad, exportSampleRate);
+            const base = 'pad_' + (selectedPad + 1) + '_' + Date.now();
+
+            if (exportSelection.wav) downloadBlob(audioBufferToWavBlob(rendered), base + '.wav');
+            if (exportSelection.aiff) downloadBlob(audioBufferToAiffBlob(rendered), base + '.aiff');
+            if (exportSelection.mp3) downloadBlob(audioBufferToMp3Blob(rendered), base + '.mp3');
+
+            setShowExportModal(false);
+          } catch (err) {
+            alert('Export failed:\n\n' + (err?.message || err));
+          }
+        };
+
+        // ---- Project Save/Load (iPhone Files app friendly) ----
+        const saveProjectFile = async () => {
+          try {
+            const project = {
+              schema: 'tapapp-project-v1',
+              createdAt: new Date().toISOString(),
+              pads: []
+            };
+
+            for (let i = 0; i < 16; i++) {
+              const p = pads[i];
+              if (!p) {
+                project.pads.push(null);
+                continue;
+              }
+
+              // We store the ORIGINAL blob (compressed when possible) as a data URL,
+              // plus pad settings. This keeps project files smaller than WAV exports.
+              if (!p.originalBlob) {
+                project.pads.push({
+                  audioDataUrl: null,
+                  audioMime: null,
+                  audioName: null,
+                  settings: {
+                    volume: p.volume ?? 1,
+                    trimStart: p.trimStart ?? 0,
+                    trimEnd: p.trimEnd ?? 1,
+                    normalize: !!p.normalize,
+                    loop: !!p.loop,
+                    playMode: p.playMode || 'exclusive',
+                    mutePads: p.mutePads || []
+                  }
+                });
+                continue;
+              }
+
+              const dataUrl = await blobToBase64DataUrl(p.originalBlob);
+              project.pads.push({
+                audioDataUrl: dataUrl,
+                audioMime: p.originalBlob.type || null,
+                audioName: p.originalName || 'audio',
+                settings: {
+                  volume: p.volume ?? 1,
+                  trimStart: p.trimStart ?? 0,
+                  trimEnd: p.trimEnd ?? 1,
+                  normalize: !!p.normalize,
+                  loop: !!p.loop,
+                  playMode: p.playMode || 'exclusive',
+                  mutePads: p.mutePads || []
+                }
+              });
+            }
+
+            const json = JSON.stringify(project);
+            const blob = new Blob([json], { type: 'application/json' });
+
+            // .tapproj file downloads to iPhone; user can "Save to Files" and pick folder
+            downloadBlob(blob, 'TapApp_Project_' + Date.now() + '.tapproj');
+          } catch (err) {
+            alert('Save Project failed:\n\n' + (err?.message || err));
+          }
+        };
+
+        const loadProjectFromFile = async (file) => {
+          try {
+            if (!file) return;
+
+            const text = await file.text();
+            const project = JSON.parse(text);
+
+            if (!project || project.schema !== 'tapapp-project-v1' || !Array.isArray(project.pads)) {
+              alert('That file does not look like a TapApp project (v1).');
+              return;
+            }
+
+            // Stop everything currently playing
+            for (let i = 0; i < 16; i++) stopVoicesForPad(i);
+
+            const newPads = Array(16).fill(null);
+
+            for (let i = 0; i < 16; i++) {
+              const entry = project.pads[i];
+              if (!entry) continue;
+
+              const settings = entry.settings || {};
+              let blob = null;
+
+              if (entry.audioDataUrl) {
+                blob = dataUrlToBlob(entry.audioDataUrl);
+              }
+
+              if (blob) {
+                const ab = await blob.arrayBuffer();
+                const audioBuffer = await decodeToAudioBuffer(ab);
+
+                newPads[i] = {
+                  audioBuffer,
+                  originalBlob: blob,
+                  originalName: entry.audioName || 'project_audio',
+                  volume: settings.volume ?? 1,
+                  trimStart: settings.trimStart ?? 0,
+                  trimEnd: settings.trimEnd ?? 1,
+                  normalize: !!settings.normalize,
+                  loop: !!settings.loop,
+                  playMode: settings.playMode || 'exclusive',
+                  mutePads: Array.isArray(settings.mutePads) ? settings.mutePads : []
+                };
+              } else {
+                // If audio missing, still restore settings as a placeholder
+                newPads[i] = {
+                  audioBuffer: null,
+                  originalBlob: null,
+                  originalName: null,
+                  volume: settings.volume ?? 1,
+                  trimStart: settings.trimStart ?? 0,
+                  trimEnd: settings.trimEnd ?? 1,
+                  normalize: !!settings.normalize,
+                  loop: !!settings.loop,
+                  playMode: settings.playMode || 'exclusive',
+                  mutePads: Array.isArray(settings.mutePads) ? settings.mutePads : []
+                };
+              }
+            }
+
+            setPads(newPads);
+            setSelectedPad(null);
+            setEditingPad(null);
+            setWaveformData(null);
+
+            alert('Project loaded.');
+          } catch (err) {
+            alert('Load Project failed:\n\n' + (err?.message || err));
+          }
+        };
+
+        const triggerLoadProject = () => {
+          if (loadProjectInputRef.current) loadProjectInputRef.current.click();
+        };
+
+        // ---- UI ----
+        return e('div', { className: 'min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 p-4 pb-64' },
+          e('h1', { className: 'text-3xl font-bold text-white text-center mb-6' }, 'Audio Sampler'),
 
           e('div', { className: 'grid grid-cols-4 gap-3 max-w-md mx-auto mb-6' },
             pads.map((pad, i) =>
               e('div', { key: i, className: 'relative' },
                 e('button', {
-                  onClick: () => pad ? playPad(i) : setSelectedPad(i),
+                  onClick: () => (pad ? playPad(i) : setSelectedPad(i)),
                   className:
                     'w-full aspect-square rounded-xl font-bold text-lg transition-all ' +
                     (selectedPad === i ? 'ring-4 ring-blue-400 ' : '') +
-                    (playingPads.has(i) ? 'bg-green-500 scale-95 ' : pad ? 'bg-blue-600 hover:bg-blue-500 ' : 'bg-gray-700 hover:bg-gray-600 ') +
+                    (playingPads.has(i) ? 'bg-green-600 scale-95 ' : pad ? 'bg-blue-600 hover:bg-blue-500 ' : 'bg-gray-700 hover:bg-gray-600 ') +
                     (mutedPads.has(i) ? 'opacity-50 ' : '') +
                     'text-white shadow-lg active:scale-90'
-                },
-                  i + 1,
-                  pad && pad.loop && e('span', { className: 'absolute top-1 left-1 text-xs' }, '🔁')
-                ),
+                }, (i + 1)),
 
                 pad && e('div', { className: 'absolute top-1 right-1 flex gap-1' },
                   e('button', {
@@ -575,10 +873,11 @@
             )
           ),
 
+          // Bottom bar
           e('div', { className: 'fixed bottom-0 left-0 right-0 bg-gray-800 p-4 shadow-lg' },
             e('div', { className: 'max-w-md mx-auto space-y-3' },
               e('div', { className: 'text-white text-center text-sm' },
-                selectedPad !== null ? 'Pad ' + (selectedPad + 1) + ' selected' : 'Select a pad'
+                selectedPad !== null ? ('Pad ' + (selectedPad + 1) + ' selected') : 'Select a pad'
               ),
 
               e('div', { className: 'grid grid-cols-2 gap-2' },
@@ -599,15 +898,30 @@
                 }, '📤 Upload')
               ),
 
+              e('div', { className: 'grid grid-cols-2 gap-2' },
+                e('button', {
+                  onClick: openExport,
+                  disabled: selectedPad === null || !pads[selectedPad],
+                  className:
+                    'py-3 rounded-xl font-bold text-white shadow-lg bg-emerald-600 hover:bg-emerald-500 transition-all active:scale-95 disabled:bg-gray-600 disabled:cursor-not-allowed'
+                }, '⬇️ Export'),
+
+                e('button', {
+                  onClick: saveProjectFile,
+                  className:
+                    'py-3 rounded-xl font-bold text-white shadow-lg bg-indigo-600 hover:bg-indigo-500 transition-all active:scale-95'
+                }, '💾 Save Project')
+              ),
+
               e('button', {
-                onClick: isRecordingTrack ? stopTrackRecording : startTrackRecording,
+                onClick: triggerLoadProject,
                 className:
-                  'w-full py-3 rounded-xl font-bold text-white shadow-lg transition-all active:scale-95 ' +
-                  (isRecordingTrack ? 'bg-red-600 animate-pulse' : 'bg-green-600 hover:bg-green-500')
-              }, isRecordingTrack ? '⏹️ Stop Track Recording' : '⏺️ Record Track')
+                  'w-full py-3 rounded-xl font-bold text-white shadow-lg bg-gray-700 hover:bg-gray-600 transition-all active:scale-95'
+              }, '📂 Load Project (from Files)')
             )
           ),
 
+          // Hidden inputs
           e('input', {
             ref: fileInputRef,
             type: 'file',
@@ -616,6 +930,19 @@
             className: 'hidden'
           }),
 
+          e('input', {
+            ref: loadProjectInputRef,
+            type: 'file',
+            accept: '.tapproj,application/json',
+            onChange: async (ev) => {
+              const file = ev.target.files?.[0];
+              ev.target.value = '';
+              if (file) await loadProjectFromFile(file);
+            },
+            className: 'hidden'
+          }),
+
+          // Editor modal
           editingPad !== null && e('div', { className: 'fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-4 z-50 overflow-y-auto' },
             e('div', { className: 'bg-gray-800 rounded-xl p-6 max-w-2xl w-full my-8' },
               e('div', { className: 'flex justify-between items-center mb-4' },
@@ -627,17 +954,16 @@
               ),
 
               e('div', { className: 'space-y-4' },
-
                 e('div', { className: 'bg-gray-900 rounded-lg p-4' },
                   e('div', { className: 'flex justify-between items-center mb-2' },
-                    e('span', { className: 'text-white text-sm' }, 'Waveform (0dB line in red)'),
+                    e('span', { className: 'text-white text-sm' }, 'Waveform'),
                     e('div', { className: 'flex gap-2' },
                       e('button', {
-                        onClick: () => setZoomLevel(Math.max(1, zoomLevel - 0.5)),
+                        onClick: () => setZoomLevel(Math.max(1, zoomLevel - 1)),
                         className: 'bg-gray-700 p-2 rounded text-white text-xs'
                       }, '🔍-'),
                       e('button', {
-                        onClick: () => setZoomLevel(Math.min(5, zoomLevel + 0.5)),
+                        onClick: () => setZoomLevel(Math.min(6, zoomLevel + 1)),
                         className: 'bg-gray-700 p-2 rounded text-white text-xs'
                       }, '🔍+')
                     )
@@ -650,7 +976,6 @@
                   })
                 ),
 
-                // ✅ FIXED VOLUME SLIDER BLOCK
                 e('div', null,
                   e('label', { className: 'text-white text-sm block mb-2' },
                     '🔊 Volume: ' + Math.round(editParams.volume * 100) + '%'
@@ -659,9 +984,9 @@
                     type: 'range',
                     min: '0',
                     max: '2',
-                    step: '0.1',
+                    step: '0.01',
                     value: String(editParams.volume),
-                    onChange: (ev) => setEditParams(Object.assign({}, editParams, { volume: parseFloat(ev.target.value) })),
+                    onChange: (ev) => setEditParams({ ...editParams, volume: parseFloat(ev.target.value) }),
                     className: 'w-full'
                   })
                 ),
@@ -674,9 +999,9 @@
                     type: 'range',
                     min: '0',
                     max: String(editParams.trimEnd),
-                    step: '0.01',
+                    step: '0.001',
                     value: String(editParams.trimStart),
-                    onChange: (ev) => setEditParams(Object.assign({}, editParams, { trimStart: parseFloat(ev.target.value) })),
+                    onChange: (ev) => setEditParams({ ...editParams, trimStart: parseFloat(ev.target.value) }),
                     className: 'w-full'
                   })
                 ),
@@ -689,9 +1014,9 @@
                     type: 'range',
                     min: String(editParams.trimStart),
                     max: '1',
-                    step: '0.01',
+                    step: '0.001',
                     value: String(editParams.trimEnd),
-                    onChange: (ev) => setEditParams(Object.assign({}, editParams, { trimEnd: parseFloat(ev.target.value) })),
+                    onChange: (ev) => setEditParams({ ...editParams, trimEnd: parseFloat(ev.target.value) }),
                     className: 'w-full'
                   })
                 ),
@@ -701,10 +1026,10 @@
                     type: 'checkbox',
                     id: 'normalize',
                     checked: !!editParams.normalize,
-                    onChange: (ev) => setEditParams(Object.assign({}, editParams, { normalize: ev.target.checked })),
+                    onChange: (ev) => setEditParams({ ...editParams, normalize: ev.target.checked }),
                     className: 'w-5 h-5'
                   }),
-                  e('label', { htmlFor: 'normalize', className: 'text-white' }, 'Normalize Audio (-0.1 dB)')
+                  e('label', { htmlFor: 'normalize', className: 'text-white' }, 'Normalize (-0.1 dB)')
                 ),
 
                 e('div', { className: 'flex items-center gap-2' },
@@ -712,21 +1037,21 @@
                     type: 'checkbox',
                     id: 'loop',
                     checked: !!editParams.loop,
-                    onChange: (ev) => setEditParams(Object.assign({}, editParams, { loop: ev.target.checked })),
+                    onChange: (ev) => setEditParams({ ...editParams, loop: ev.target.checked }),
                     className: 'w-5 h-5'
                   }),
-                  e('label', { htmlFor: 'loop', className: 'text-white' }, 'Loop Sample')
+                  e('label', { htmlFor: 'loop', className: 'text-white' }, 'Loop trimmed region')
                 ),
 
                 e('div', null,
                   e('label', { className: 'text-white text-sm block mb-2' }, 'Play Mode'),
                   e('select', {
                     value: editParams.playMode,
-                    onChange: (ev) => setEditParams(Object.assign({}, editParams, { playMode: ev.target.value })),
+                    onChange: (ev) => setEditParams({ ...editParams, playMode: ev.target.value }),
                     className: 'w-full bg-gray-700 text-white p-3 rounded-lg'
                   },
-                    e('option', { value: 'exclusive' }, 'Exclusive (stops last played pad)'),
-                    e('option', { value: 'full' }, 'Full Shot (plays over last pad)')
+                    e('option', { value: 'exclusive' }, 'Exclusive (stops last pad)'),
+                    e('option', { value: 'full' }, 'Full (overlaps)')
                   )
                 ),
 
@@ -737,40 +1062,76 @@
                       if (idx === editingPad) return null;
                       return e('button', {
                         key: idx,
-                        onClick: () => toggleMutePad(idx),
+                        onClick: () => toggleMutePadInEditor(idx),
                         className:
                           'py-2 rounded font-bold transition-all ' +
-                          (editParams.mutePads.includes(idx) ? 'bg-red-600 text-white' : 'bg-gray-700 text-gray-300')
+                          ((editParams.mutePads || []).includes(idx) ? 'bg-red-600 text-white' : 'bg-gray-700 text-gray-300')
                       }, idx + 1);
                     })
                   )
                 ),
 
-                e('button', {
-                  onClick: applyEdit,
-                  className: 'w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-xl transition-all active:scale-95'
-                }, 'Apply Changes')
+                e('div', { className: 'grid grid-cols-2 gap-2' },
+                  e('button', {
+                    onClick: () => playPad(editingPad),
+                    className: 'w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl transition-all active:scale-95'
+                  }, '▶️ Test'),
+                  e('button', {
+                    onClick: applyEdit,
+                    className: 'w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-xl transition-all active:scale-95'
+                  }, '✅ Apply')
+                )
               )
             )
           ),
 
+          // Export modal
           showExportModal && e('div', { className: 'fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-4 z-50' },
             e('div', { className: 'bg-gray-800 rounded-xl p-6 max-w-md w-full' },
               e('div', { className: 'flex justify-between items-center mb-4' },
-                e('h2', { className: 'text-xl font-bold text-white' }, 'Export Track'),
+                e('h2', { className: 'text-xl font-bold text-white' }, 'Export'),
                 e('button', { onClick: () => setShowExportModal(false), className: 'text-white text-2xl' }, '×')
               ),
 
               e('div', { className: 'space-y-4' },
                 e('div', null,
-                  e('label', { className: 'text-white text-sm block mb-2' }, 'Format'),
-                  e('select', {
-                    value: exportFormat,
-                    onChange: (ev) => setExportFormat(ev.target.value),
-                    className: 'w-full bg-gray-700 text-white p-3 rounded-lg'
-                  },
-                    e('option', { value: 'wav' }, 'WAV'),
-                    e('option', { value: 'mp3' }, 'MP3 (exports WAV)')
+                  e('div', { className: 'text-white text-sm mb-2' }, 'Formats (choose any)'),
+                  e('div', { className: 'space-y-2' },
+
+                    e('label', { className: 'flex items-center gap-3 text-white' },
+                      e('input', {
+                        type: 'checkbox',
+                        checked: !!exportSelection.mp3,
+                        onChange: (ev) => setExportSelection({ ...exportSelection, mp3: ev.target.checked }),
+                        className: 'w-5 h-5'
+                      }),
+                      e('span', null, '1) MP3')
+                    ),
+
+                    e('label', { className: 'flex items-center gap-3 text-white' },
+                      e('input', {
+                        type: 'checkbox',
+                        checked: !!exportSelection.aiff,
+                        onChange: (ev) => setExportSelection({ ...exportSelection, aiff: ev.target.checked }),
+                        className: 'w-5 h-5'
+                      }),
+                      e('span', null, '2) AIFF')
+                    ),
+
+                    e('label', { className: 'flex items-center gap-3 text-white' },
+                      e('input', {
+                        type: 'checkbox',
+                        checked: !!exportSelection.wav,
+                        onChange: (ev) => setExportSelection({ ...exportSelection, wav: ev.target.checked }),
+                        className: 'w-5 h-5'
+                      }),
+                      e('span', null, '3) WAV')
+                    ),
+
+                    e('label', { className: 'flex items-center gap-3 text-white opacity-70' },
+                      e('input', { type: 'checkbox', checked: false, disabled: true, className: 'w-5 h-5' }),
+                      e('span', null, '4) M4A (AAC) — suggested (add later with FFmpeg/WASM)')
+                    )
                   )
                 ),
 
@@ -787,17 +1148,16 @@
                 ),
 
                 e('button', {
-                  onClick: exportTrack,
-                  className: 'w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-xl transition-all active:scale-95'
-                }, '💾 Export')
+                  onClick: exportSelected,
+                  className: 'w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-xl transition-all active:scale-95'
+                }, '💾 Export Selected')
               )
             )
           )
         );
       }
 
-      const rootEl = document.getElementById('root');
-      const root = ReactDOM.createRoot(rootEl);
+      const root = ReactDOM.createRoot(document.getElementById('root'));
       root.render(e(MobileSampler));
     })();
   </script>
